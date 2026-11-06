@@ -123,5 +123,23 @@ service cloud.firestore {
       allow read: if true;
       allow write: if true;
     }
+
+    // BOM Items
+    match /bom_items/{itemId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Purchase Order Items
+    match /purchase_order_items/{itemId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Connection testing
+    match /test/{docId} {
+      allow read: if true;
+      allow write: if true;
+    }
   }
 }

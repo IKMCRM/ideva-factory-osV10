@@ -353,6 +353,39 @@
         "created_at": { "type": "string", "format": "date-time" }
       },
       "required": ["code", "department", "requester"]
+    },
+    "bom_item": {
+      "title": "BOM Item",
+      "description": "Item ingredient inside a BOM formulation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "bom_id": { "type": "string", "description": "Parent BOM recipe ID" },
+        "part": { "type": "string", "description": "Part or Phase (A, B, C)" },
+        "raw_material_id": { "type": "string", "description": "Raw material ID" },
+        "material_code": { "type": "string", "description": "Material code" },
+        "material_name": { "type": "string", "description": "Material name" },
+        "quantity": { "type": "number", "description": "Quantity" },
+        "unit": { "type": "string", "description": "Unit" },
+        "notes": { "type": "string", "description": "Notes" }
+      },
+      "required": ["material_name", "quantity"]
+    },
+    "purchase_order_item": {
+      "title": "Purchase Order Item",
+      "description": "Line item inside a Purchase Order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "purchase_order_id": { "type": "string", "description": "Parent PO ID" },
+        "raw_material_id": { "type": "string", "description": "Raw material ID" },
+        "item_name": { "type": "string", "description": "Item description" },
+        "quantity": { "type": "number", "description": "Quantity ordered" },
+        "unit": { "type": "string", "description": "Unit" },
+        "unit_price": { "type": "number", "description": "Price per unit" },
+        "subtotal": { "type": "number", "description": "Line total" }
+      },
+      "required": ["item_name", "quantity"]
     }
   },
   "firestore": {
@@ -427,6 +460,14 @@
     "/requisitions/{reqId}": {
       "schema": "requisition",
       "description": "Material requisition slips"
+    },
+    "/bom_items/{itemId}": {
+      "schema": "bom_item",
+      "description": "BOM formulation line items"
+    },
+    "/purchase_order_items/{itemId}": {
+      "schema": "purchase_order_item",
+      "description": "PO line items"
     }
   }
 }

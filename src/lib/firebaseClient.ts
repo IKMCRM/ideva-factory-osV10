@@ -193,4 +193,69 @@ export async function seedOfficialSuppliersToFirestore(): Promise<{
   }
 }
 
+/**
+ * 100% Real-time Firestore Multi-Collection Synchronizer
+ * Listens to all factory collections simultaneously for instant cross-device updates
+ */
+export function subscribeToFirestoreRealtime(
+  onUpdate: (table: string, eventType: string) => void
+): () => void {
+  const unsubscribers: (() => void)[] = [];
+  const targetCollections = [
+    "suppliers",
+    "raw_materials",
+    "inventory_pack",
+    "products",
+    "customers",
+    "purchase_orders",
+    "purchase_order_items",
+    "purchase_packs",
+    "production_orders",
+    "prechecks",
+    "bom_recipes",
+    "bom_items",
+    "packing_orders",
+    "grns",
+    "projects",
+    "requisitions",
+    "semi_finished_goods",
+    "raw_material_lots",
+    "qc_inspections",
+    "audit_logs"
+  ];
+
+  targetCollections.forEach((table) => {
+    try {
+      const colRef = collection(db, table);
+      let isFirstSnapshot = true;
+      const unsub = onSnapshot(
+        colRef,
+        (snapshot) => {
+          if (isFirstSnapshot) {
+            isFirstSnapshot = false;
+            return;
+          }
+          if (snapshot.docChanges().length > 0) {
+            const firstChange = snapshot.docChanges()[0];
+            const eventType = firstChange ? firstChange.type.toUpperCase() : "UPDATE";
+            onUpdate(table, eventType);
+          }
+        },
+        (error) => {
+          console.warn(`[Firestore Realtime Warning] collection '${table}':`, error.message);
+        }
+      );
+      unsubscribers.push(unsub);
+    } catch (err) {
+      console.warn(`[Firestore Realtime Listener Setup] table '${table}':`, err);
+    }
+  });
+
+  return () => {
+    unsubscribers.forEach((u) => {
+      try { u(); } catch {}
+    });
+  };
+}
+
 export { firebaseConfig };

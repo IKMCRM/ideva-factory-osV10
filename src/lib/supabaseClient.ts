@@ -6,7 +6,8 @@ import {
   firestoreDeleteDoc,
   testFirestoreConnection,
   seedOfficialSuppliersToFirestore,
-  OFFICIAL_SUPPLIERS
+  OFFICIAL_SUPPLIERS,
+  subscribeToFirestoreRealtime
 } from "./firebaseClient";
 
 const getValidEnvVar = (val: any): string => {
@@ -960,15 +961,18 @@ export async function clearAllDatabaseTables(passcode: string): Promise<{
   }
   setSyncQueue([]);
 
-  // 2. Delete all rows from Supabase directly
+  // 2. Delete all documents from Firebase Firestore directly
   for (const t of tablesInOrder) {
     try {
-      const { error } = await withTimeout(supabase.from(t).delete().gt("id", -1), 3500);
-      if (error) {
-        console.warn(`[Supabase Clear] Table ${t}:`, error.message);
+      const docs = await firestoreGetCollection(t);
+      for (const d of docs) {
+        const docId = String(d.code || d.id || d.lot_id_code || "");
+        if (docId) {
+          await firestoreDeleteDoc(t, docId);
+        }
       }
     } catch (e) {
-      console.warn(`[Supabase Clear Exception] Table ${t}:`, e);
+      console.warn(`[Firestore Clear Exception] Table ${t}:`, e);
     }
   }
 
@@ -1120,91 +1124,53 @@ export const ALL_17_TABLES = [
 ];
 
 /**
- * Enhanced Real-time Supabase Subscription
- * - Listens specifically to all 17 database tables for INSERT, UPDATE, and DELETE events.
- * - Subscribes to schema 'public' wildcard AND explicit table bindings for 100% catch rate across devices/SDK versions.
- * - Features automatic re-subscription on network disconnect / error / timeout.
- * - Debounces rapid event triggers to optimize network calls while keeping UI updated globally in real time.
+ * 100% Real-time Firebase Firestore & Intra-tab Subscription
+ * - Listens directly to all 17+ factory collections in Firebase Firestore for real-time changes.
+ * - Triggers instant updates across devices, users, and tabs without polling.
+ * - Debounces rapid event triggers to optimize React state updates.
  */
-let activeRealtimeChannel: any = null;
-let realtimeRetryCount = 0;
-const MAX_REALTIME_RETRIES = 3;
-
-export function subscribeToRealtimeDatabase(onUpdate: (table: string, eventType: string) => void) {
+export function subscribeToRealtimeDatabase(onUpdate: (table: string, eventType: string) => void): () => void {
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let isUnsubscribed = false;
 
   const debouncedNotify = (table: string, eventType: string) => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      onUpdate(table, eventType);
-    }, 250);
+      if (!isUnsubscribed) {
+        onUpdate(table, eventType);
+      }
+    }, 200);
   };
 
-  try {
-    // 1. Unsubscribe any existing active channel cleanly first
-    if (activeRealtimeChannel) {
-      try {
-        supabase.removeChannel(activeRealtimeChannel);
-      } catch {}
-      activeRealtimeChannel = null;
-    }
+  // 1. Direct Firebase Firestore Realtime multi-collection listener
+  const unsubFirestore = subscribeToFirestoreRealtime((table, eventType) => {
+    debouncedNotify(table, eventType);
+  });
 
-    const channelName = "ideva-realtime-global-channel";
-    let channel = supabase.channel(channelName);
-
-    // 2. Schema-wide Realtime Listener for table changes
-    channel = channel.on(
-      "postgres_changes",
-      { event: "*", schema: "public" },
-      (payload: any) => {
-        const tableName = payload.table || "unknown";
-        console.log(`⚡ [Supabase Realtime] ${payload.eventType} on table '${tableName}'`);
-        debouncedNotify(tableName, payload.eventType || "UPDATE");
-      }
-    );
-
-    activeRealtimeChannel = channel;
-
-    // 3. Subscribe with Backoff Policy (max 3 retries, no endless 3s loops)
-    channel.subscribe((status: string, err?: any) => {
-      if (status === "SUBSCRIBED") {
-        realtimeRetryCount = 0;
-        console.log("🟢 [Supabase Realtime] Connected & Subscribed successfully!");
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-        if (!isUnsubscribed && realtimeRetryCount < MAX_REALTIME_RETRIES) {
-          realtimeRetryCount++;
-          const backoffDelay = Math.min(15000, Math.pow(2, realtimeRetryCount) * 2500);
-          console.warn(`⚠️ [Supabase Realtime] Channel status '${status}'. Attempting reconnect ${realtimeRetryCount}/${MAX_REALTIME_RETRIES} in ${Math.round(backoffDelay/1000)}s...`);
-          setTimeout(() => {
-            if (!isUnsubscribed && activeRealtimeChannel === channel) {
-              try {
-                supabase.removeChannel(channel);
-              } catch {}
-              activeRealtimeChannel = null;
-              subscribeToRealtimeDatabase(onUpdate);
-            }
-          }, backoffDelay);
-        } else if (realtimeRetryCount >= MAX_REALTIME_RETRIES) {
-          console.info(`ℹ️ [Supabase Realtime] Standby mode active (background HTTP synchronization will continue updating data).`);
-        }
-      }
-    });
-
-    return () => {
-      isUnsubscribed = true;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      if (activeRealtimeChannel === channel) {
-        try {
-          supabase.removeChannel(channel);
-        } catch {}
-        activeRealtimeChannel = null;
+  // 2. Intra-tab / cross-window BroadcastChannel listener
+  let unsubBroadcast: (() => void) | null = null;
+  if (broadcastSyncChannel) {
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === "DATA_MUTATED" && event.data?.table) {
+        debouncedNotify(event.data.table, "UPDATE");
       }
     };
-  } catch (err) {
-    console.warn("Could not subscribe to Supabase Realtime channel:", err);
-    return () => {};
+    try {
+      broadcastSyncChannel.addEventListener("message", handler);
+      unsubBroadcast = () => {
+        try { broadcastSyncChannel.removeEventListener("message", handler); } catch {}
+      };
+    } catch {}
   }
+
+  return () => {
+    isUnsubscribed = true;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    try { unsubFirestore(); } catch {}
+    if (unsubBroadcast) {
+      try { unsubBroadcast(); } catch {}
+    }
+  };
 }
 
 export { FULL_SUPABASE_SCHEMA_SQL } from "./schemaSql";

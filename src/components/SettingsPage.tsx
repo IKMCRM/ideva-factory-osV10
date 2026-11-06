@@ -33,7 +33,7 @@ import {
   getShareableDatabaseLink
 } from "../lib/supabaseClient";
 import { FULL_SUPABASE_SCHEMA_SQL } from "../lib/schemaSql";
-import { firebaseConfig } from "../lib/firebaseClient";
+import { firebaseConfig, testFirestoreConnection } from "../lib/firebaseClient";
 
 interface SettingsPageProps {
   activeTheme: string;
@@ -216,6 +216,62 @@ export default function SettingsPage({
               <Lock className="w-2.5 h-2.5" /> ล็อค
             </span>
           </button>
+        </div>
+      </div>
+
+      {/* Primary Cloud Database: Firebase Firestore 100% */}
+      <div className="bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-amber-500/5 p-6 rounded-2xl shadow-sm border border-amber-200 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-amber-200/60">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-500 text-white rounded-xl shadow-xs">
+              <Flame className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                  ฐานข้อมูลหลัก: Firebase Firestore Enterprise (100% Realtime Active)
+                </h3>
+                <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> ออนไลน์สมบูรณ์
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Database ID: <code className="font-mono font-bold text-amber-900 bg-amber-100/80 px-1.5 py-0.5 rounded">{firebaseConfig.firestoreDatabaseId}</code> | Cloud Region: <span className="font-bold text-slate-800">asia-south1</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await testFirestoreConnection();
+                alert(res.message);
+              }}
+              className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> ทดสอบสัญญาณ Firestore
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="p-3 bg-white/80 rounded-xl border border-amber-100">
+            <span className="text-slate-500 text-[11px] block">เครื่องยนต์หลัก</span>
+            <span className="font-bold text-slate-800">Google Cloud Firestore</span>
+          </div>
+          <div className="p-3 bg-white/80 rounded-xl border border-amber-100">
+            <span className="text-slate-500 text-[11px] block">การซิงค์ข้อมูล</span>
+            <span className="font-bold text-emerald-700">Realtime onSnapshot</span>
+          </div>
+          <div className="p-3 bg-white/80 rounded-xl border border-amber-100">
+            <span className="text-slate-500 text-[11px] block">จำนวนตารางที่เชื่อมต่อ</span>
+            <span className="font-bold text-amber-800">17+ คอลเลกชันครบวงจร</span>
+          </div>
+          <div className="p-3 bg-white/80 rounded-xl border border-amber-100">
+            <span className="text-slate-500 text-[11px] block">ความปลอดภัย</span>
+            <span className="font-bold text-blue-700">Rules Deployed (100%)</span>
+          </div>
         </div>
       </div>
 

@@ -351,10 +351,20 @@ export default function App() {
         case "qc_inspections": setQcInspections(data); break;
         case "audit_logs": setAuditLogs(data); break;
         case "bom_recipes": setBomRecipes(enrichBomRecipes(data, products)); break;
+        case "bom_items": {
+          const freshBoms = await clientGetList("bom_recipes", true);
+          setBomRecipes(enrichBomRecipes(freshBoms, products));
+          break;
+        }
         case "semi_finished_goods": setSemiGoods(data); break;
         case "production_orders": setProductionOrders(data); break;
         case "packing_orders": setPackingOrders(data); break;
         case "purchase_orders": setPurchaseOrders(data); break;
+        case "purchase_order_items": {
+          const freshPos = await clientGetList("purchase_orders", true);
+          setPurchaseOrders(freshPos);
+          break;
+        }
         case "grns": setGrns(data); break;
         case "prechecks": setPrechecks(data); break;
         case "inventory_pack": setInventoryPacks(data); break;
