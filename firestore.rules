@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Suppliers
+    match /suppliers/{supplierId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Customers
+    match /customers/{customerId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Products
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Raw Materials
+    match /raw_materials/{materialId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Raw Material Lots
+    match /raw_material_lots/{lotId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // QC Inspections
+    match /qc_inspections/{inspectionId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Audit Logs
+    match /audit_logs/{logId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // BOM Recipes
+    match /bom_recipes/{recipeId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Production Orders
+    match /production_orders/{orderId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Packing Orders
+    match /packing_orders/{packOrderId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Purchase Orders
+    match /purchase_orders/{poId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // GRNs
+    match /grns/{grnId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Prechecks
+    match /prechecks/{precheckId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Inventory Pack
+    match /inventory_pack/{packId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Purchase Packs
+    match /purchase_packs/{packPoId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Projects
+    match /projects/{projectId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Semi-Finished Goods
+    match /semi_finished_goods/{semiId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Requisitions
+    match /requisitions/{reqId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

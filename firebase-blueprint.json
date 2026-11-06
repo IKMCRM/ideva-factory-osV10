@@ -1,0 +1,432 @@
+{
+  "entities": {
+    "supplier": {
+      "title": "Supplier",
+      "description": "Chemical and raw material suppliers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Supplier code e.g. SUP-0001" },
+        "name": { "type": "string", "description": "Supplier company name" },
+        "company_name": { "type": "string", "description": "Full legal company name" },
+        "contact": { "type": "string", "description": "Contact person" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "email": { "type": "string", "description": "Email address" },
+        "address": { "type": "string", "description": "Company address" },
+        "tax_id": { "type": "string", "description": "Tax ID" },
+        "status": { "type": "string", "enum": ["active", "inactive", "suspended"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name"]
+    },
+    "customer": {
+      "title": "Customer",
+      "description": "Factory clients and OEM brands",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Customer code e.g. CUST-001" },
+        "name": { "type": "string", "description": "Customer name" },
+        "contact": { "type": "string", "description": "Contact person" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "email": { "type": "string", "description": "Email address" },
+        "tax_id": { "type": "string", "description": "Tax ID" },
+        "address": { "type": "string", "description": "Address" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name"]
+    },
+    "product": {
+      "title": "Product",
+      "description": "Finished chemical goods",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Product code e.g. P-001" },
+        "name": { "type": "string", "description": "Product name" },
+        "type": { "type": "string", "description": "Product type" },
+        "version": { "type": "string", "description": "Version string" },
+        "status": { "type": "string", "enum": ["active", "inactive", "draft"] },
+        "image_url": { "type": "string", "description": "Image URL" },
+        "category": { "type": "string", "description": "Category" },
+        "description": { "type": "string", "description": "Description" },
+        "unit_price": { "type": "number", "description": "Price per unit" },
+        "stock_qty": { "type": "number", "description": "Stock quantity" },
+        "min_stock": { "type": "number", "description": "Minimum stock limit" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name"]
+    },
+    "raw_material": {
+      "title": "Raw Material",
+      "description": "Raw chemicals and active ingredients",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Chemical code e.g. RM-001" },
+        "name": { "type": "string", "description": "Chemical name" },
+        "category": { "type": "string", "description": "Category" },
+        "default_unit": { "type": "string", "description": "Default unit" },
+        "base_unit": { "type": "string", "description": "Base unit" },
+        "standard_conversion": { "type": "number", "description": "Conversion multiplier" },
+        "unit": { "type": "string", "description": "Display unit" },
+        "stock_qty": { "type": "number", "description": "Current stock quantity" },
+        "min_stock": { "type": "number", "description": "Minimum safety stock" },
+        "unit_price": { "type": "number", "description": "Unit cost" },
+        "supplier_id": { "type": "string", "description": "Supplier ID" },
+        "supplier_name": { "type": "string", "description": "Supplier Name" },
+        "storage_condition": { "type": "string", "description": "Storage condition" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "coa_required": { "type": "boolean", "description": "Whether COA is required" },
+        "image_url": { "type": "string", "description": "Image URL" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name"]
+    },
+    "raw_material_lot": {
+      "title": "Raw Material Lot",
+      "description": "Individual received chemical batches",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "lot_id_code": { "type": "string", "description": "Lot identifier code" },
+        "material_id": { "type": "string", "description": "Material ID" },
+        "material_code": { "type": "string", "description": "Material code" },
+        "material_name": { "type": "string", "description": "Material name" },
+        "supplier_lot_no": { "type": "string", "description": "Supplier lot number" },
+        "grn_no": { "type": "string", "description": "GRN document number" },
+        "po_number": { "type": "string", "description": "PO document number" },
+        "supplier_name": { "type": "string", "description": "Supplier name" },
+        "received_date": { "type": "string", "format": "date" },
+        "manufacture_date": { "type": "string", "format": "date" },
+        "expiry_date": { "type": "string", "format": "date" },
+        "retest_date": { "type": "string", "format": "date" },
+        "received_qty": { "type": "number", "description": "Received quantity" },
+        "remaining_qty": { "type": "number", "description": "Remaining stock quantity" },
+        "purchase_unit": { "type": "string", "description": "Unit of purchase" },
+        "unit_price_per_kg": { "type": "number", "description": "Unit price per kg" },
+        "total_purchase_value": { "type": "number", "description": "Total purchase value" },
+        "qc_status": { "type": "string", "description": "QC status" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lot_id_code", "material_name"]
+    },
+    "qc_inspection": {
+      "title": "QC Inspection",
+      "description": "Incoming QC test records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "grn_no": { "type": "string", "description": "GRN number" },
+        "material_code": { "type": "string", "description": "Material code" },
+        "material_name": { "type": "string", "description": "Material name" },
+        "lot_code": { "type": "string", "description": "Lot code" },
+        "supplier_name": { "type": "string", "description": "Supplier name" },
+        "received_qty": { "type": "number", "description": "Quantity" },
+        "purchase_unit": { "type": "string", "description": "Unit" },
+        "expiry_date": { "type": "string", "format": "date" },
+        "qc_status": { "type": "string", "description": "QC outcome" },
+        "inspector": { "type": "string", "description": "Inspector name" },
+        "inspection_date": { "type": "string", "format": "date" },
+        "remarks": { "type": "string", "description": "Remarks" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["material_name", "qc_status"]
+    },
+    "audit_log": {
+      "title": "Audit Log",
+      "description": "System activity logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "user": { "type": "string", "description": "Acting user" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "action": { "type": "string", "description": "Action taken" },
+        "module": { "type": "string", "description": "Module affected" },
+        "material_code": { "type": "string", "description": "Related code" },
+        "reason": { "type": "string", "description": "Reason" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["action", "module"]
+    },
+    "bom_recipe": {
+      "title": "BOM Recipe",
+      "description": "Master chemical formulations and BOMs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "product_id": { "type": "string", "description": "Product ID" },
+        "part_no": { "type": "string", "description": "Part number" },
+        "version": { "type": "string", "description": "Version string" },
+        "status": { "type": "string", "enum": ["active", "inactive", "draft"] },
+        "estimated_unit_cost": { "type": "number", "description": "Cost estimate" },
+        "notes": { "type": "string", "description": "Formulation notes" },
+        "materials": { "type": "string", "description": "JSON string of recipe materials" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["product_id"]
+    },
+    "production_order": {
+      "title": "Production Order",
+      "description": "Orders for chemical manufacturing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Production order code e.g. PO-2026-001" },
+        "customer_id": { "type": "string", "description": "Customer ID" },
+        "product_id": { "type": "string", "description": "Product ID" },
+        "quantity": { "type": "number", "description": "Target batch quantity" },
+        "unit": { "type": "string", "description": "Unit of measurement" },
+        "status": { "type": "string", "enum": ["pending", "running", "done", "cancelled"] },
+        "due_date": { "type": "string", "format": "date" },
+        "staff": { "type": "string", "description": "Responsible operator" },
+        "date": { "type": "string", "format": "date" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "quantity"]
+    },
+    "packing_order": {
+      "title": "Packing Order",
+      "description": "Packing and bottling orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Packing order code" },
+        "production_order_id": { "type": "string", "description": "Related production order" },
+        "item_name": { "type": "string", "description": "Item to pack" },
+        "quantity": { "type": "number", "description": "Bottles/packs quantity" },
+        "unit": { "type": "string", "description": "Unit" },
+        "status": { "type": "string", "enum": ["pending", "running", "done"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "item_name", "quantity"]
+    },
+    "purchase_order": {
+      "title": "Purchase Order",
+      "description": "Raw material purchase orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "PO code e.g. PO-001" },
+        "supplier": { "type": "string", "description": "Supplier name" },
+        "order_date": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["pending", "approved", "received", "cancelled"] },
+        "total_amount": { "type": "number", "description": "Total order cost" },
+        "items": { "type": "string", "description": "JSON items" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "supplier"]
+    },
+    "grn": {
+      "title": "Goods Received Note",
+      "description": "Warehouse intake receipts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "GRN code e.g. GRN-001" },
+        "purchase_order_id": { "type": "string", "description": "PO reference" },
+        "raw_material_id": { "type": "string", "description": "Material reference" },
+        "lot_number": { "type": "string", "description": "Batch / Lot number" },
+        "expiry_date": { "type": "string", "format": "date" },
+        "received_qty": { "type": "number", "description": "Received quantity" },
+        "receiver": { "type": "string", "description": "Warehouse receiver name" },
+        "receive_date": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["received", "inspected", "stored"] },
+        "unit": { "type": "string", "description": "Unit" },
+        "unit_price": { "type": "number", "description": "Unit cost" },
+        "supplier_name": { "type": "string", "description": "Supplier name" },
+        "po_number": { "type": "string", "description": "PO number" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "lot_number", "received_qty"]
+    },
+    "precheck": {
+      "title": "Precheck",
+      "description": "Pre-production chemical safety checks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "material": { "type": "string", "description": "Material inspected" },
+        "lot": { "type": "string", "description": "Lot number" },
+        "expiry": { "type": "string", "format": "date" },
+        "inspector": { "type": "string", "description": "Inspector" },
+        "date": { "type": "string", "format": "date" },
+        "result": { "type": "string", "enum": ["pending", "pass", "fail"] },
+        "notes": { "type": "string", "description": "Notes" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["material", "lot"]
+    },
+    "inventory_pack": {
+      "title": "Inventory Pack",
+      "description": "Packaging stock (bottles, caps, boxes)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Packaging code e.g. PKG-001" },
+        "type": { "type": "string", "description": "Type of packaging" },
+        "name": { "type": "string", "description": "Item name" },
+        "qty": { "type": "number", "description": "Quantity in stock" },
+        "unit": { "type": "string", "description": "Unit e.g. ชิ้น" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "supplier_name": { "type": "string", "description": "Supplier name" },
+        "unit_price": { "type": "number", "description": "Unit price" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name"]
+    },
+    "purchase_pack": {
+      "title": "Purchase Pack",
+      "description": "Packaging purchase orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Order code" },
+        "supplier": { "type": "string", "description": "Supplier name" },
+        "item": { "type": "string", "description": "Item description" },
+        "qty": { "type": "number", "description": "Quantity" },
+        "price": { "type": "number", "description": "Price" },
+        "status": { "type": "string", "enum": ["pending", "received", "cancelled"] },
+        "unit": { "type": "string", "description": "Unit" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "item"]
+    },
+    "project": {
+      "title": "Project",
+      "description": "OEM manufacturing projects",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "title": { "type": "string", "description": "Project title" },
+        "project_type": { "type": "string", "description": "Project type" },
+        "customer": { "type": "string", "description": "Customer brand" },
+        "customer_status": { "type": "string", "description": "Customer status" },
+        "owner": { "type": "string", "description": "Project manager" },
+        "price": { "type": "number", "description": "Project value" },
+        "start_date": { "type": "string", "format": "date" },
+        "due_date": { "type": "string", "format": "date" },
+        "progress": { "type": "number", "description": "Progress percentage" },
+        "status": { "type": "string", "description": "Project stage" },
+        "quantity": { "type": "number", "description": "Quantity" },
+        "product_code": { "type": "string", "description": "Product code" },
+        "lot_number": { "type": "string", "description": "Lot number" },
+        "product_name": { "type": "string", "description": "Product name" },
+        "details": { "type": "string", "description": "Details" },
+        "category": { "type": "string", "description": "Category" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title"]
+    },
+    "semi_finished_good": {
+      "title": "Semi-Finished Good",
+      "description": "Semi-finished Bulk WIP goods in tanks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Semi-finished code e.g. SF-001" },
+        "name": { "type": "string", "description": "Bulk formulation name" },
+        "batch_no": { "type": "string", "description": "Batch number" },
+        "qty": { "type": "number", "description": "Quantity in tank" },
+        "unit": { "type": "string", "description": "Unit (KG. / L.)" },
+        "tank_no": { "type": "string", "description": "Tank number" },
+        "mfg_date": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["active", "quarantine", "depleted"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "name"]
+    },
+    "requisition": {
+      "title": "Requisition Slip",
+      "description": "Chemical and packaging requisition slips",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Requisition slip code" },
+        "date": { "type": "string", "format": "date" },
+        "department": { "type": "string", "description": "Requesting department" },
+        "requester": { "type": "string", "description": "Requester name" },
+        "purpose": { "type": "string", "description": "Purpose of withdrawal" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "items": { "type": "string", "description": "JSON items" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "department", "requester"]
+    }
+  },
+  "firestore": {
+    "/suppliers/{supplierId}": {
+      "schema": "supplier",
+      "description": "Chemical and raw material suppliers"
+    },
+    "/customers/{customerId}": {
+      "schema": "customer",
+      "description": "Factory clients and OEM brands"
+    },
+    "/products/{productId}": {
+      "schema": "product",
+      "description": "Finished chemical goods"
+    },
+    "/raw_materials/{materialId}": {
+      "schema": "raw_material",
+      "description": "Raw chemicals and active ingredients"
+    },
+    "/raw_material_lots/{lotId}": {
+      "schema": "raw_material_lot",
+      "description": "Individual received chemical batches and lots"
+    },
+    "/qc_inspections/{inspectionId}": {
+      "schema": "qc_inspection",
+      "description": "Incoming QC test records"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "audit_log",
+      "description": "System audit logs"
+    },
+    "/bom_recipes/{recipeId}": {
+      "schema": "bom_recipe",
+      "description": "Master chemical formulations and BOMs"
+    },
+    "/production_orders/{orderId}": {
+      "schema": "production_order",
+      "description": "Production orders for chemical manufacturing"
+    },
+    "/packing_orders/{packOrderId}": {
+      "schema": "packing_order",
+      "description": "Packing and packaging orders"
+    },
+    "/purchase_orders/{poId}": {
+      "schema": "purchase_order",
+      "description": "Raw material purchase orders"
+    },
+    "/grns/{grnId}": {
+      "schema": "grn",
+      "description": "Goods Received Notes"
+    },
+    "/prechecks/{precheckId}": {
+      "schema": "precheck",
+      "description": "Pre-production chemical safety checks"
+    },
+    "/inventory_pack/{packId}": {
+      "schema": "inventory_pack",
+      "description": "Packaging stock (bottles, caps, boxes)"
+    },
+    "/purchase_packs/{packPoId}": {
+      "schema": "purchase_pack",
+      "description": "Packaging purchase orders"
+    },
+    "/projects/{projectId}": {
+      "schema": "project",
+      "description": "OEM manufacturing projects"
+    },
+    "/semi_finished_goods/{semiId}": {
+      "schema": "semi_finished_good",
+      "description": "Semi-finished Bulk WIP goods"
+    },
+    "/requisitions/{reqId}": {
+      "schema": "requisition",
+      "description": "Material requisition slips"
+    }
+  }
+}

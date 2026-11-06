@@ -1,0 +1,8 @@
+{
+  "name": "Remix 04 Nov 26 IDEVA Factory OS",
+  "description": "ระบบบริหารจัดการโรงงานอัจฉริยะ สูตรการผลิต (BOM) ใบสั่งผลิต ตรวจสอบคุณภาพวัตถุดิบ คลังสินค้า และรายงานการจัดซื้อแบบเรียลไทม์",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

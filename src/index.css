@@ -1,0 +1,110 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Sarabun:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Sarabun", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", "Sarabun", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Base styling overrides */
+body {
+  font-family: var(--font-sans);
+  background-color: #f8fafc;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* Custom color theme mapping using CSS variables */
+:root {
+  --primary-color: #3b82f6;
+  --primary-hover: #2563eb;
+  --primary-light: #f0f6ff;
+  --primary-border: #dbeafe;
+  --primary-dark: #1d4ed8;
+  --primary-brand: #60a5fa;
+}
+
+/* bg classes override */
+.bg-blue-600 {
+  background-color: var(--primary-color) !important;
+}
+.bg-blue-600\/90 {
+  background-color: color-mix(in srgb, var(--primary-color) 90%, transparent) !important;
+}
+.bg-blue-50 {
+  background-color: var(--primary-light) !important;
+}
+.bg-blue-50\/50 {
+  background-color: color-mix(in srgb, var(--primary-light) 50%, transparent) !important;
+}
+.bg-blue-100 {
+  background-color: var(--primary-border) !important;
+}
+
+/* text classes override */
+.text-blue-600 {
+  color: var(--primary-color) !important;
+}
+.text-blue-700 {
+  color: var(--primary-dark) !important;
+}
+.text-blue-400 {
+  color: var(--primary-brand) !important;
+}
+.text-blue-500 {
+  color: var(--primary-brand) !important;
+}
+
+/* hover classes override */
+.hover\:bg-blue-700:hover {
+  background-color: var(--primary-hover) !important;
+}
+.hover\:bg-blue-50:hover {
+  background-color: var(--primary-light) !important;
+}
+.hover\:text-blue-700:hover {
+  color: var(--primary-dark) !important;
+}
+
+/* border classes override */
+.border-blue-200 {
+  border-color: var(--primary-border) !important;
+}
+.border-blue-600 {
+  border-color: var(--primary-color) !important;
+}
+
+/* shadows and focuses if any */
+.focus\:ring-blue-500:focus {
+  --tw-ring-color: var(--primary-color) !important;
+}
+.shadow-blue-900\/20 {
+  --tw-shadow-color: color-mix(in srgb, var(--primary-dark) 20%, transparent) !important;
+}
+.shadow-blue-200 {
+  --tw-shadow-color: var(--primary-border) !important;
+}
+
+/* Glassy Gold Rotating Border and Glowing effect */
+@keyframes goldGlow {
+  0%, 100% {
+    box-shadow: 0 4px 12px rgba(212, 175, 55, 0.25), inset 0 0 6px rgba(255, 255, 255, 0.7);
+    border-color: rgba(212, 175, 55, 0.4);
+  }
+  50% {
+    box-shadow: 0 8px 24px rgba(212, 175, 55, 0.5), inset 0 0 10px rgba(255, 255, 255, 0.9);
+    border-color: rgba(255, 215, 0, 0.8);
+  }
+}
+
+.gold-glass-active {
+  animation: goldGlow 3s ease-in-out infinite;
+}
+
