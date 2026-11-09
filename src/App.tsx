@@ -34,6 +34,8 @@ import {
 import IncomingQcPage from "./components/IncomingQcPage";
 import AuditLogPage from "./components/AuditLogPage";
 import TestCasesPage from "./components/TestCasesPage";
+import QcPassLabelModal from "./components/QcPassLabelModal";
+import BarcodeQcCenter from "./components/BarcodeQcCenter";
 import { 
   Customer, 
   Product, 
@@ -140,6 +142,7 @@ export default function App() {
   const [semiGoods, setSemiGoods] = useState<SemiFinishedGood[]>([]);
   const [requisitions, setRequisitions] = useState<RequisitionSlip[]>([]);
   const [isDbModalOpen, setIsDbModalOpen] = useState(false);
+  const [isGlobalLabelModalOpen, setIsGlobalLabelModalOpen] = useState(false);
 
   // UI Toast state
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
@@ -702,16 +705,16 @@ export default function App() {
 
   // Handler: Save Stock Count & Adjust physical inventory
   const handleSaveStockCount = async (params: {
-    materialId: number;
+    materialId?: number;
     lotId?: number;
     countedQtyKg: number;
     varianceKg: number;
     reason: string;
     countedBy: string;
-    location: string;
+    location?: string;
   }) => {
     try {
-      const mat = rawMaterials.find((m) => m.id === params.materialId);
+      const mat = params.materialId ? rawMaterials.find((m) => m.id === params.materialId) : undefined;
       if (mat) {
         const newStockG = params.countedQtyKg * (mat.unit?.toLowerCase().includes("kg") ? 1000 : 1);
         await clientSave("raw_materials", mat.id, {
@@ -1012,6 +1015,26 @@ export default function App() {
             onSaveCoa={handleSaveCoa}
           />
         );
+      case "barcode_qc":
+        return (
+          <BarcodeQcCenter 
+            rawMaterials={rawMaterials}
+            rawMaterialLots={rawMaterialLots}
+            grns={grns}
+            productionOrders={productionOrders}
+            packingOrders={packingOrders}
+            products={products}
+            suppliers={suppliers}
+            qcInspections={qcInspections}
+            auditLogs={auditLogs}
+            onSaveStockCount={handleSaveStockCount}
+            onSaveQcInspection={async (qc) => handleSave("qc_inspections", qc, "บันทึกผลการอนุมัติ QC เรียบร้อยแล้ว!")}
+            onLogAudit={async (log) => {
+              await clientSave("audit_logs", 0, log);
+              await loadAllData();
+            }}
+          />
+        );
       case "audit_log":
         return (
           <AuditLogPage 
@@ -1173,17 +1196,25 @@ export default function App() {
           notifications={notifications}
           onNavigate={setActivePage}
           onOpenDbModal={() => setIsDbModalOpen(true)}
+          onOpenLabelModal={() => setIsGlobalLabelModalOpen(true)}
         />
-
-
-
-
 
         {/* Content Viewport */}
         <main className="flex-1 p-4 md:p-6 overflow-y-auto max-w-7xl w-full mx-auto">
           {renderActivePageContent()}
         </main>
       </div>
+
+      {/* Global Workpiece Label Maker Modal (FM-QC-17 REV:01) */}
+      {isGlobalLabelModalOpen && (
+        <QcPassLabelModal
+          availableProducts={products}
+          availableMaterials={rawMaterials}
+          availableProductions={productionOrders}
+          availableGrns={grns}
+          onClose={() => setIsGlobalLabelModalOpen(false)}
+        />
+      )}
 
       {/* Database Direct Link & Health Check Modal (Protected by Passcode) */}
       <DatabaseModal

@@ -16,7 +16,8 @@ import {
   BookOpen,
   Briefcase,
   Database,
-  Lock
+  Lock,
+  Barcode
 } from "lucide-react";
 
 interface SidebarProps {
@@ -46,6 +47,7 @@ export default function Sidebar({ activePage, setActivePage, isOpen, setIsOpen, 
       { id: "purchase", label: "จัดซื้อวัตถุดิบ", icon: <ShoppingCart className="w-4 h-4" /> },
       { id: "grn", label: "รับเข้าคลัง (GRN)", icon: <Truck className="w-4 h-4" /> },
       { id: "incoming_qc", label: "ตรวจรับคุณภาพ (Incoming QC)", icon: <ShieldCheck className="w-4 h-4" /> },
+      { id: "barcode_qc", label: "ออกบาร์โค้ด & ป้ายผ่าน QC", icon: <Barcode className="w-4 h-4" /> },
       { id: "inventory", label: "การจัดการคลังสินค้า", icon: <Warehouse className="w-4 h-4" /> }
     ]},
     { section: "รายงาน & ประวัติ", items: [

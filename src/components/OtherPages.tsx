@@ -398,6 +398,7 @@ export function ProductionPage({
   const [statusFilter, setStatusFilter] = useState("all");
   const [editingPo, setEditingPo] = useState<ProductionOrder | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [printLabelPo, setPrintLabelPo] = useState<ProductionOrder | null>(null);
 
   const [code, setCode] = useState("");
   const [customerId, setCustomerId] = useState<number | "">("");
@@ -593,6 +594,15 @@ export function ProductionPage({
 
                         <div className="w-[1px] h-4 bg-slate-200 mx-0.5"></div>
 
+                        {/* Print Label for Workpiece (ป้ายชี้บ่งแปะชิ้นงาน) */}
+                        <button
+                          onClick={() => setPrintLabelPo(po)}
+                          className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold flex items-center gap-1 transition-all shadow-2xs cursor-pointer"
+                          title="พิมพ์ป้ายชี้บ่งแปะชิ้นงาน/ถังผสม (FM-QC-17 REV:01)"
+                        >
+                          <Printer className="w-3 h-3" /> ป้ายชี้บ่ง
+                        </button>
+
                         {/* Edit Button */}
                         <button
                           onClick={() => openFormModal(po)}
@@ -700,6 +710,16 @@ export function ProductionPage({
         </div>
       )}
 
+      {/* Workpiece Label Modal (FM-QC-17 REV:01) */}
+      {printLabelPo && (
+        <QcPassLabelModal
+          productionOrder={printLabelPo}
+          availableProducts={products}
+          availableProductions={productionOrders}
+          onClose={() => setPrintLabelPo(null)}
+        />
+      )}
+
       <ConfirmDeleteDialog
         isOpen={!!deleteTarget}
         title="ยืนยันการลบใบสั่งผลิต (Production Work Order)"
@@ -735,6 +755,7 @@ export function PackingPage({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingPacking, setEditingPacking] = useState<PackingOrder | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [printLabelPacking, setPrintLabelPacking] = useState<PackingOrder | null>(null);
 
   const [code, setCode] = useState("");
   const [poId, setPoId] = useState<number | "">("");
@@ -883,6 +904,15 @@ export function PackingPage({
 
                       <div className="w-[1px] h-4 bg-slate-200 mx-0.5"></div>
 
+                      {/* Print Label for Workpiece (ป้ายชี้บ่งแปะชิ้นงานบรรจุ) */}
+                      <button
+                        onClick={() => setPrintLabelPacking(p)}
+                        className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold flex items-center gap-1 transition-all shadow-2xs cursor-pointer"
+                        title="พิมพ์ป้ายชี้บ่งแปะกล่อง/ชิ้นงานบรรจุ (FM-QC-17 REV:01)"
+                      >
+                        <Printer className="w-3 h-3" /> ป้ายชี้บ่ง
+                      </button>
+
                       {/* Edit Button */}
                       <button
                         onClick={() => openFormModal(p)}
@@ -1006,6 +1036,14 @@ export function PackingPage({
             </form>
           </div>
         </div>
+      )}
+
+      {/* Workpiece Label Modal (FM-QC-17 REV:01) */}
+      {printLabelPacking && (
+        <QcPassLabelModal
+          packingOrder={printLabelPacking}
+          onClose={() => setPrintLabelPacking(null)}
+        />
       )}
 
       <ConfirmDeleteDialog

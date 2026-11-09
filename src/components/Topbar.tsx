@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Bell, Menu, Calendar, Clock, AlertTriangle, XCircle, CheckCircle, Info, Database, Lock, Share2, CheckCircle2 } from "lucide-react";
+import { Bell, Menu, Calendar, Clock, AlertTriangle, XCircle, CheckCircle, Info, Database, Lock, Share2, CheckCircle2, Tag, Printer } from "lucide-react";
 import { getShareableDatabaseLink } from "../lib/supabaseClient";
 
 interface NotificationItem {
@@ -18,6 +18,7 @@ interface TopbarProps {
   notifications?: NotificationItem[];
   onNavigate?: (page: string) => void;
   onOpenDbModal?: () => void;
+  onOpenLabelModal?: () => void;
 }
 
 export default function Topbar({ 
@@ -27,7 +28,8 @@ export default function Topbar({
   dbStatus,
   notifications = [],
   onNavigate,
-  onOpenDbModal
+  onOpenDbModal,
+  onOpenLabelModal
 }: TopbarProps) {
   const pageTitles: Record<string, string> = {
     dashboard: "แดชบอร์ดภาพรวม",
@@ -39,6 +41,8 @@ export default function Topbar({
     packing: "ใบสั่งบรรจุภัณฑ์ (Packing)",
     purchase: "ใบสั่งซื้อเคมีภัณฑ์",
     grn: "ใบรับเข้าคลังสินค้า (GRN)",
+    incoming_qc: "ตรวจรับคุณภาพ (Incoming QC)",
+    barcode_qc: "ศูนย์ออกบาร์โค้ด & พิมพ์ป้ายผ่าน QC",
     inventory: "การจัดการคลังสินค้า",
     report: "รายงานสรุปโรงงาน",
     manual: "คู่มือการใช้งานระบบ",
@@ -100,6 +104,19 @@ export default function Topbar({
       </div>
 
       <div className="flex items-center gap-2.5">
+        {/* Quick Workpiece Label Maker Button (FM-QC-17 REV:01) */}
+        {onOpenLabelModal && (
+          <button
+            onClick={onOpenLabelModal}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-green-700 hover:from-emerald-700 hover:to-green-800 text-white rounded-xl text-xs font-bold shadow-sm shadow-emerald-500/20 transition-all active:scale-95 cursor-pointer border border-emerald-400/40"
+            title="พิมพ์ป้ายชี้บ่งแปะชิ้นงานตามแบบตัวอย่าง (FM-QC-17 REV:01)"
+          >
+            <Tag className="w-3.5 h-3.5 text-emerald-200" />
+            <span className="hidden sm:inline">พิมพ์ป้ายชี้บ่งชิ้นงาน</span>
+            <span className="sm:hidden">ป้ายชี้บ่ง</span>
+          </button>
+        )}
+
         {/* Dedicated Button for Database Link & Check (Protected by Passcode) */}
         <button
           onClick={onOpenDbModal}
