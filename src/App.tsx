@@ -652,6 +652,104 @@ export default function App() {
     }
   };
 
+  // Handler: Save COA Document to Firestore
+  const handleSaveCoa = async (payload: {
+    grnId?: number;
+    lotId?: number;
+    inspectionId?: number;
+    coaUrl: string;
+    coaStatus: "Attached" | "Missing COA";
+    coaData?: any;
+  }) => {
+    try {
+      if (payload.grnId) {
+        const targetGrn = grns.find((g) => g.id === payload.grnId);
+        if (targetGrn) {
+          await clientSave("grns", targetGrn.id, {
+            ...targetGrn,
+            coa_url: payload.coaUrl
+          });
+        }
+      }
+
+      if (payload.lotId) {
+        const targetLot = rawMaterialLots.find((l) => l.id === payload.lotId);
+        if (targetLot) {
+          await clientSave("raw_material_lots", targetLot.id, {
+            ...targetLot,
+            coa_url: payload.coaUrl,
+            coa_status: payload.coaStatus
+          });
+        }
+      }
+
+      if (payload.inspectionId) {
+        const targetQc = qcInspections.find((q) => q.id === payload.inspectionId);
+        if (targetQc) {
+          await clientSave("qc_inspections", targetQc.id, {
+            ...targetQc,
+            coa_status: payload.coaStatus
+          });
+        }
+      }
+
+      showToast("บันทึกเอกสารใบรับรอง COA ลงฐานข้อมูลสำเร็จแล้ว!", "success");
+      await loadAllData();
+    } catch (err: any) {
+      showToast(err.message || "เกิดข้อผิดพลาดในการบันทึก COA", "error");
+    }
+  };
+
+  // Handler: Save Stock Count & Adjust physical inventory
+  const handleSaveStockCount = async (params: {
+    materialId: number;
+    lotId?: number;
+    countedQtyKg: number;
+    varianceKg: number;
+    reason: string;
+    countedBy: string;
+    location: string;
+  }) => {
+    try {
+      const mat = rawMaterials.find((m) => m.id === params.materialId);
+      if (mat) {
+        const newStockG = params.countedQtyKg * (mat.unit?.toLowerCase().includes("kg") ? 1000 : 1);
+        await clientSave("raw_materials", mat.id, {
+          ...mat,
+          stock_qty: newStockG
+        });
+      }
+
+      if (params.lotId) {
+        const lot = rawMaterialLots.find((l) => l.id === params.lotId);
+        if (lot) {
+          await clientSave("raw_material_lots", lot.id, {
+            ...lot,
+            remaining_qty: params.countedQtyKg * 1000
+          });
+        }
+      }
+
+      await clientSave("audit_logs", 0, {
+        user: params.countedBy || "เจ้าหน้าที่คลังสินค้า",
+        timestamp: new Date().toISOString(),
+        action: "STOCK_COUNT_ADJUST",
+        module: "StockCount",
+        material_code: mat?.code || "RM-CHEM",
+        lot_number: params.lotId ? String(params.lotId) : undefined,
+        old_value: `${mat ? (mat.stock_qty / 1000).toFixed(2) : "0"} KG`,
+        new_value: `${params.countedQtyKg.toFixed(2)} KG (ผลต่าง: ${params.varianceKg > 0 ? "+" : ""}${params.varianceKg.toFixed(2)} KG)`,
+        reason: `${params.reason} | ตำแหน่งจัดเก็บ: ${params.location}`,
+        ref_doc: `COUNT-${Date.now().toString().slice(-6)}`
+      });
+
+      showToast("บันทึกผลการนับสต็อกและอัปเดตยอดคงคลังสำเร็จแล้ว!", "success");
+      await loadAllData();
+    } catch (err: any) {
+      showToast(err.message || "เกิดข้อผิดพลาดในการปรับปรุงยอดสต็อก", "error");
+    }
+  };
+
   // Render subpage views
   const renderActivePageContent = () => {
     switch (activePage) {
@@ -795,8 +893,35 @@ export default function App() {
             grns={grns}
             rawMaterials={rawMaterials}
             purchaseOrders={purchaseOrders}
+            suppliers={suppliers}
+            qcInspections={qcInspections}
+            lots={rawMaterialLots}
+            auditLogs={auditLogs}
             onAddGrn={handleAddGrn}
             onDeleteGrn={async (id) => handleDelete("grns", id, "ลบรายการรับเข้า (GRN) เรียบร้อยแล้ว!")}
+            onSaveQcInspection={async (qc) => handleSave("qc_inspections", qc, "บันทึกผลการอนุมัติ QC เรียบร้อยแล้ว!")}
+            onUpdateLotStatus={async (lotId, qcStatus, stockStatus) => {
+              const targetLot = rawMaterialLots.find(l => l.id === lotId || String(l.id) === String(lotId));
+              if (targetLot) {
+                const updated = { ...targetLot, qc_status: qcStatus, stock_status: stockStatus };
+                await clientSave("raw_material_lots", targetLot.id, updated);
+                if (qcStatus === "QC Passed") {
+                  const mat = rawMaterials.find(rm => rm.id === targetLot.material_id);
+                  if (mat) {
+                    const addQtyG = targetLot.remaining_qty || (targetLot.received_qty * 1000);
+                    const updatedMat = { ...mat, stock_qty: Number(mat.stock_qty || 0) + addQtyG };
+                    await clientSave("raw_materials", mat.id, updatedMat);
+                  }
+                }
+                await loadAllData();
+              }
+            }}
+            onSaveCoa={handleSaveCoa}
+            onSaveStockCount={handleSaveStockCount}
+            onLogAudit={async (log) => {
+              await clientSave("audit_logs", 0, log);
+              await loadAllData();
+            }}
           />
         );
       case "inventory":
@@ -884,6 +1009,7 @@ export default function App() {
               await clientSave("audit_logs", 0, log);
               await loadAllData();
             }}
+            onSaveCoa={handleSaveCoa}
           />
         );
       case "audit_log":

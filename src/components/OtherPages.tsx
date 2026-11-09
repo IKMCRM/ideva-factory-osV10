@@ -26,7 +26,13 @@ import {
   BarChart3,
   Layers,
   Users,
-  Warehouse
+  Warehouse,
+  Barcode as BarcodeIcon,
+  ShieldCheck,
+  Eye,
+  Check,
+  Sparkles,
+  Clock
 } from "lucide-react";
 import { 
   Precheck, 
@@ -38,8 +44,14 @@ import {
   RawMaterial, 
   Grn, 
   InventoryPack,
-  Supplier 
+  Supplier,
+  QcInspection,
+  RawMaterialLot,
+  AuditLog
 } from "../types";
+import QcPassLabelModal from "./QcPassLabelModal";
+import CoaDocumentModal from "./CoaDocumentModal";
+import StockCountModal from "./StockCountModal";
 
 // Reusable active in-app Delete Confirmation Modal (NO window.confirm!)
 export function ConfirmDeleteDialog({
@@ -1353,39 +1365,93 @@ export function PurchasePage({
 }
 
 // ============================================================================
-// GOODS RECEIVE NOTE (GRN) PAGE
+// GOODS RECEIVE NOTE (GRN) & INCOMING QC PAGE
 // ============================================================================
 interface GrnsPageProps {
   grns: Grn[];
   rawMaterials: RawMaterial[];
   purchaseOrders: PurchaseOrder[];
+  suppliers?: Supplier[];
+  qcInspections?: QcInspection[];
+  lots?: RawMaterialLot[];
+  auditLogs?: AuditLog[];
   onAddGrn: (grn: any) => Promise<void>;
   onDeleteGrn?: (id: number) => Promise<void>;
+  onSaveQcInspection?: (qc: QcInspection) => Promise<void>;
+  onUpdateLotStatus?: (lotId: number, qcStatus: any, stockStatus: any) => Promise<void>;
+  onSaveCoa?: (payload: any) => Promise<void>;
+  onSaveStockCount?: (params: any) => Promise<void>;
+  onLogAudit?: (log: Omit<AuditLog, "id">) => Promise<void>;
 }
-export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDeleteGrn }: GrnsPageProps) {
+
+export function GrnsPage({ 
+  grns, 
+  rawMaterials, 
+  purchaseOrders, 
+  suppliers = [],
+  qcInspections = [],
+  lots = [],
+  auditLogs = [],
+  onAddGrn, 
+  onDeleteGrn,
+  onSaveQcInspection,
+  onUpdateLotStatus,
+  onSaveCoa,
+  onSaveStockCount,
+  onLogAudit
+}: GrnsPageProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+
+  // Modal triggers
+  const [activeQcModal, setActiveQcModal] = useState<QcInspection | null>(null);
+  const [activeCoaModalTarget, setActiveCoaModalTarget] = useState<{ grn?: Grn; lot?: RawMaterialLot; inspection?: QcInspection } | null>(null);
+  const [activePrintLabelTarget, setActivePrintLabelTarget] = useState<{ inspection?: QcInspection; lot?: RawMaterialLot; grn?: Grn } | null>(null);
+  const [isStockCountOpen, setIsStockCountOpen] = useState(false);
+
+  // Form State for Adding GRN
   const [code, setCode] = useState("");
   const [purchaseOrderId, setPurchaseOrderId] = useState<number | "">("");
   const [poNumber, setPoNumber] = useState("");
   const [materialId, setMaterialId] = useState<number | "">("");
-  const [receivedQty, setReceivedQty] = useState(0);
+  const [supplierName, setSupplierName] = useState("");
+  const [receivedQty, setReceivedQty] = useState(100);
   const [unitPrice, setUnitPrice] = useState<number>(0);
   const [lotNumber, setLotNumber] = useState("");
   const [receiveDate, setReceiveDate] = useState(new Date().toISOString().slice(0, 10));
   const [expiryDate, setExpiryDate] = useState("");
+  const [retestDate, setRetestDate] = useState("");
+  const [appearance, setAppearance] = useState("ของเหลว ใส ไม่มีตะกอน");
+  const [labelPieces, setLabelPieces] = useState(1);
+  const [coaUrl, setCoaUrl] = useState("");
   const [receiver, setReceiver] = useState("สมศักดิ์ คลังสินค้า");
+
+  // QC Quick Inspection form states
+  const [qcInspector, setQcInspector] = useState("สุรัสวดี");
+  const [qcApprover, setQcApprover] = useState("ณ");
+  const [qcStatusInput, setQcStatusInput] = useState<"QC Passed" | "QC Failed" | "Quarantine" | "Under Inspection">("QC Passed");
+  const [qcAppearance, setQcAppearance] = useState("ของเหลว ใส ไม่มีตะกอน");
+  const [qcCoaStatus, setQcCoaStatus] = useState<"Attached" | "Missing COA">("Attached");
+  const [qcRemarks, setQcRemarks] = useState("ผ่านการตรวจสอบคุณภาพตามมาตรฐานโรงงาน (FM-QC-17 REV:01)");
 
   const openFormModal = () => {
     setCode(`GRN-2026-${String(grns.length + 19).padStart(4, "0")}`);
     setPurchaseOrderId("");
     setPoNumber("");
     setMaterialId("");
+    setSupplierName("บริษัท เคมีภัณฑ์ คอร์ปอเรชั่น จำกัด");
     setReceivedQty(100);
     setUnitPrice(0);
     setLotNumber(`L${new Date().toISOString().slice(2, 10).replace(/-/g, "")}-001`);
     setReceiveDate(new Date().toISOString().slice(0, 10));
     setExpiryDate(new Date(Date.now() + 365*2*24*60*60*1000).toISOString().slice(0, 10));
+    setRetestDate(new Date(Date.now() + 180*24*60*60*1000).toISOString().slice(0, 10));
+    setAppearance("ของเหลว ใส ไม่มีตะกอน");
+    setLabelPieces(1);
+    setCoaUrl("");
+    setReceiver("สมศักดิ์ คลังสินค้า");
     setIsModalOpen(true);
   };
 
@@ -1394,6 +1460,9 @@ export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDelet
     const matchedPo = purchaseOrders.find(po => po.id === poId);
     if (matchedPo) {
       setPoNumber(matchedPo.code);
+      if (matchedPo.supplier) {
+        setSupplierName(matchedPo.supplier);
+      }
       if (matchedPo.items && matchedPo.items.length > 0) {
         const firstItem = matchedPo.items[0];
         setMaterialId(firstItem.raw_material_id);
@@ -1406,22 +1475,33 @@ export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDelet
   const handleMaterialChange = (rmId: number) => {
     setMaterialId(rmId);
     const rm = rawMaterials.find(r => r.id === rmId);
-    if (rm && rm.unit_price) {
-      setUnitPrice(rm.unit_price);
+    if (rm) {
+      if (rm.unit_price) setUnitPrice(rm.unit_price);
+      if (rm.supplier_name || rm.supplier) setSupplierName(rm.supplier_name || rm.supplier || "");
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!materialId || !receivedQty || !lotNumber.trim()) return;
+
+    const rm = rawMaterials.find(r => r.id === Number(materialId));
     
     await onAddGrn({
       code,
       purchase_order_id: purchaseOrderId ? Number(purchaseOrderId) : undefined,
       po_number: poNumber || undefined,
       raw_material_id: Number(materialId),
+      material_code: rm?.code,
+      material_name: rm?.name,
+      supplier_name: supplierName || rm?.supplier_name || rm?.supplier || "IDEVA / De Roma",
       lot_number: lotNumber,
+      supplier_lot_no: lotNumber,
       expiry_date: expiryDate,
+      retest_date: retestDate,
+      appearance,
+      label_pieces: labelPieces,
+      coa_url: coaUrl,
       received_qty: receivedQty,
       unit_price: unitPrice,
       receiver,
@@ -1430,80 +1510,368 @@ export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDelet
     setIsModalOpen(false);
   };
 
+  // Open Inspection Modal for a specific GRN
+  const handleOpenQcInspection = (g: Grn) => {
+    const existingQc = qcInspections.find(q => q.grn_no === g.code);
+    const mat = rawMaterials.find(r => r.id === g.raw_material_id);
+    
+    const qcData: QcInspection = existingQc || {
+      id: Date.now(),
+      grn_no: g.code,
+      material_id: g.raw_material_id,
+      material_code: g.material_code || mat?.code || "RM-CHEM",
+      material_name: g.material_name || mat?.name || "สารเคมีรับเข้า",
+      lot_id: Date.now(),
+      lot_code: `LOT-${g.code}-${g.lot_number || g.supplier_lot_no}`,
+      supplier_lot_no: g.lot_number || g.supplier_lot_no || "-",
+      supplier_name: g.supplier_name || mat?.supplier_name || "IDEVA / De Roma",
+      received_qty: g.received_qty,
+      purchase_unit: mat?.unit || "KG.",
+      expiry_date: g.expiry_date,
+      retest_date: g.retest_date || g.receive_date,
+      appearance: g.appearance || "ของเหลว ใส ไม่มีตะกอน",
+      coa_status: g.coa_url ? "Attached" : "Missing COA",
+      qc_status: (g.qc_status as any) || "Pending QC",
+      checklist: [
+        { id: "1", title: "1. ตรวจสอบชื่อวัตถุดิบ (Material Name)", title_en: "Material Name Verification", result: "PASS", remark: "ตรงตามใบสั่งซื้อ" },
+        { id: "2", title: "2. ตรวจสอบรหัสสินค้า (Product Code)", title_en: "Product Code Verification", result: "PASS", remark: "รหัสเคมีดิบถูกต้อง" },
+        { id: "3", title: "3. ตรวจสอบ Supplier Lot No.", title_en: "Lot Number Check", result: "PASS", remark: "ตรงตามฉลากผู้ผลิต" },
+        { id: "4", title: "4. ตรวจสอบวันหมดอายุ (Expiry Date)", title_en: "Expiry Date Check", result: "PASS", remark: "อายุการใช้งาน > 1 ปี" },
+        { id: "5", title: "5. ตรวจสอบลักษณะกายภาพ (Appearance)", title_en: "Appearance Check", result: "PASS", remark: "ใส กลิ่นหอมเฉพาะตัว" },
+        { id: "6", title: "6. ตรวจสอบเอกสาร COA (Certificate of Analysis)", title_en: "COA Document Check", result: g.coa_url ? "PASS" : "N/A", remark: g.coa_url ? "มี COA แนบ" : "รอเอกสาร" }
+      ],
+      inspector: "สุรัสวดี",
+      inspection_date: new Date().toISOString().slice(0, 10),
+      approver: "ณ",
+      approval_date: new Date().toISOString().slice(0, 10),
+      remarks: "ผ่านการตรวจสอบคุณภาพตามเกณฑ์มาตรฐานโรงงานน้ำหอม (FM-QC-17 REV:01)",
+      label_pieces: 1
+    };
+
+    setActiveQcModal(qcData);
+    setQcInspector(qcData.inspector || "สุรัสวดี");
+    setQcApprover(qcData.approver || "ณ");
+    setQcAppearance(qcData.appearance || "ของเหลว ใส ไม่มีตะกอน");
+    setQcStatusInput(qcData.qc_status === "Pending QC" ? "QC Passed" : (qcData.qc_status as any));
+    setQcCoaStatus(qcData.coa_status || (g.coa_url ? "Attached" : "Missing COA"));
+    setQcRemarks(qcData.remarks || "ผ่านการตรวจสอบคุณภาพตามเกณฑ์มาตรฐานโรงงาน");
+  };
+
+  const handleSaveQcModalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeQcModal) return;
+
+    const isPassed = qcStatusInput === "QC Passed";
+    const updatedQc: QcInspection = {
+      ...activeQcModal,
+      qc_status: qcStatusInput,
+      appearance: qcAppearance,
+      coa_status: qcCoaStatus,
+      inspector: qcInspector,
+      approver: qcApprover,
+      inspection_date: new Date().toISOString().slice(0, 10),
+      approval_date: new Date().toISOString().slice(0, 10),
+      remarks: qcRemarks
+    };
+
+    if (onSaveQcInspection) {
+      await onSaveQcInspection(updatedQc);
+    }
+
+    if (onUpdateLotStatus && activeQcModal.lot_id) {
+      await onUpdateLotStatus(
+        activeQcModal.lot_id, 
+        qcStatusInput, 
+        isPassed ? "Available" : "Quarantine"
+      );
+    }
+
+    if (onLogAudit) {
+      await onLogAudit({
+        user: qcInspector,
+        timestamp: new Date().toISOString(),
+        action: isPassed ? "QC_APPROVED" : "QC_REJECTED",
+        module: "IncomingQC",
+        material_code: activeQcModal.material_code,
+        lot_number: activeQcModal.supplier_lot_no,
+        new_value: qcStatusInput,
+        reason: qcRemarks,
+        ref_doc: activeQcModal.grn_no
+      });
+    }
+
+    setActiveQcModal(null);
+  };
+
+  // Filtered GRNs
+  const filteredGrns = grns.filter((g) => {
+    const q = searchTerm.toLowerCase();
+    const mat = rawMaterials.find(r => r.id === g.raw_material_id);
+    const matchesSearch =
+      (g.code || "").toLowerCase().includes(q) ||
+      (g.lot_number || g.supplier_lot_no || "").toLowerCase().includes(q) ||
+      (mat?.name || "").toLowerCase().includes(q) ||
+      (mat?.code || "").toLowerCase().includes(q) ||
+      (g.supplier_name || "").toLowerCase().includes(q);
+
+    const inspection = qcInspections.find(qi => qi.grn_no === g.code);
+    const currentQcStatus = inspection ? inspection.qc_status : (g.qc_status || "Pending QC");
+
+    const matchesStatus = 
+      filterStatus === "all" ||
+      (filterStatus === "qc_passed" && currentQcStatus === "QC Passed") ||
+      (filterStatus === "pending_qc" && (currentQcStatus === "Pending QC" || currentQcStatus === "Under Inspection")) ||
+      (filterStatus === "quarantine" && (currentQcStatus === "Quarantine" || currentQcStatus === "QC Failed")) ||
+      (filterStatus === "has_coa" && (g.coa_url || inspection?.coa_status === "Attached")) ||
+      (filterStatus === "missing_coa" && (!g.coa_url && inspection?.coa_status !== "Attached"));
+
+    return matchesSearch && matchesStatus;
+  });
+
+  // Calculate Counters
+  const countPendingQc = grns.filter(g => {
+    const i = qcInspections.find(qi => qi.grn_no === g.code);
+    const s = i ? i.qc_status : g.qc_status;
+    return s === "Pending QC" || s === "Under Inspection";
+  }).length;
+
+  const countPassedQc = grns.filter(g => {
+    const i = qcInspections.find(qi => qi.grn_no === g.code);
+    const s = i ? i.qc_status : g.qc_status;
+    return s === "QC Passed";
+  }).length;
+
+  const countHasCoa = grns.filter(g => {
+    const i = qcInspections.find(qi => qi.grn_no === g.code);
+    return g.coa_url || i?.coa_status === "Attached";
+  }).length;
+
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
-      <div className="bg-emerald-50 border border-emerald-200 p-3.5 rounded-xl flex items-center gap-3">
-        <div className="p-2 bg-emerald-500 rounded-lg text-white">
-          <CheckCircle2 className="w-5 h-5" />
+      {/* Banner Strip */}
+      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 border border-emerald-500/20 p-5 rounded-2xl text-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 bg-emerald-500/20 w-fit px-2.5 py-0.5 rounded-full border border-emerald-500/30 mb-2">
+            <Truck className="w-3.5 h-3.5" /> GOODS RECEIVE NOTE (GRN) & QUALITY CONTROL
+          </div>
+          <h2 className="text-base sm:text-lg md:text-xl font-extrabold tracking-tight">
+            การรับเข้าเคมีภัณฑ์ ตรวจคุณภาพ (QC) และพิมพ์ป้ายชี้บ่งสีเขียว
+          </h2>
+          <p className="text-slate-300 text-xs mt-1 max-w-2xl font-sans">
+            บันทึกรับวัตถุดิบเข้าคลัง, ตรวจเช็คคุณภาพสุ่มตัวอย่าง, จัดเก็บเอกสาร COA, ปริ้นท์ป้ายชี้บ่งผ่าน QC (FM-QC-17 REV:01) และสแกนบาร์โค้ดนับสต็อก
+          </p>
         </div>
-        <div className="text-xs">
-          <strong className="text-emerald-800">ระบบสร้างล๊อตผลิตคลังอัตโนมัติ (Automated Inventory GRN Lot Generator)</strong>
-          <p className="text-emerald-600 font-sans mt-0.5">เมื่อบันทึกการรับเข้า (GRN) สต็อกคงคลังในวัตถุดิบเคมีจะเพิ่มขึ้น และล๊อตผลิตจะถูกบันทึกเพื่อตรวจสอบความย้อนกลับของสาร (Traceability)</p>
+
+        {/* Counter KPI Badges */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="bg-amber-500/20 border border-amber-500/30 text-amber-300 px-3 py-1.5 rounded-xl text-xs font-bold text-center">
+            <span className="block text-lg font-mono font-black">{countPendingQc}</span>
+            <span className="text-[10px]">รอตรวจ QC</span>
+          </div>
+          <div className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 px-3 py-1.5 rounded-xl text-xs font-bold text-center">
+            <span className="block text-lg font-mono font-black">{countPassedQc}</span>
+            <span className="text-[10px]">ผ่าน QC แล้ว</span>
+          </div>
+          <div className="bg-blue-500/20 border border-blue-500/30 text-blue-300 px-3 py-1.5 rounded-xl text-xs font-bold text-center">
+            <span className="block text-lg font-mono font-black">{countHasCoa}</span>
+            <span className="text-[10px]">มีเอกสาร COA</span>
+          </div>
         </div>
       </div>
 
-      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-        <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-          <Truck className="w-4 h-4 text-emerald-600" /> บันทึกรับเคมีภัณฑ์เข้าคลัง (Goods Receive Note)
-        </h3>
-        <button onClick={openFormModal} className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center gap-1">
-          <Plus className="w-3.5 h-3.5" /> บันทึกใบรับเข้า (GRN)
-        </button>
+      {/* Action Toolbar */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        {/* Filter Pills */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
+          {[
+            { id: "all", label: "ทั้งหมด" },
+            { id: "pending_qc", label: "🟡 รอตรวจ QC" },
+            { id: "qc_passed", label: "🟢 ผ่าน QC (Passed)" },
+            { id: "quarantine", label: "🛑 กักกัน/ไม่ผ่าน" },
+            { id: "has_coa", label: "📄 มี COA" },
+            { id: "missing_coa", label: "⚠️ รอเอกสาร COA" }
+          ].map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setFilterStatus(item.id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all border cursor-pointer ${
+                filterStatus === item.id
+                  ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                  : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Buttons & Search */}
+        <div className="flex items-center gap-2">
+          <div className="relative w-48 sm:w-60">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="ค้นหา GRN, รหัสเคมี, Lot..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <button
+            onClick={() => setIsStockCountOpen(true)}
+            className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer whitespace-nowrap"
+            title="สแกนบาร์โค้ดตรวจนับสต็อกวัตถุดิบเคมี"
+          >
+            <BarcodeIcon className="w-3.5 h-3.5 text-emerald-400" />
+            <span>ยิงบาร์โค้ดนับสต็อก</span>
+          </button>
+
+          <button
+            onClick={openFormModal}
+            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer whitespace-nowrap"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>บันทึกใบรับเข้า (GRN)</span>
+          </button>
+        </div>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      {/* Main GRN Table */}
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-600">
+          <table className="w-full text-left text-xs text-slate-700 border-collapse">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-[10px] text-slate-500 uppercase">
-                <th className="p-3">เลขที่ GRN</th>
-                <th className="p-3">วันที่นำเข้า</th>
-                <th className="p-3">อ้างอิงใบสั่งซื้อ PO</th>
-                <th className="p-3">ชื่อวัตถุดิบเคมี</th>
+              <tr className="bg-slate-100 text-[11px] font-bold text-slate-700 border-b border-slate-200 uppercase tracking-wider">
+                <th className="p-3">เลขที่ GRN / ล็อต</th>
+                <th className="p-3">รหัสสาร / ชื่อเคมีวัตถุดิบ</th>
+                <th className="p-3">ผู้ผลิต / ผู้จำหน่าย</th>
                 <th className="p-3 text-right">จำนวนรับเข้า</th>
-                <th className="p-3 text-right">ราคา/หน่วย</th>
-                <th className="p-3">Lot Number รับเข้า</th>
-                <th className="p-3">วันหมดอายุล๊อต</th>
-                <th className="p-3">ผู้เซ็นต์รับเข้า</th>
-                <th className="p-3 text-center">จัดการ</th>
+                <th className="p-3 text-center">วันที่รับ / หมดอายุ</th>
+                <th className="p-3 text-center">เอกสาร COA</th>
+                <th className="p-3 text-center">สถานะตรวจ QC</th>
+                <th className="p-3 text-center w-52">การดำเนินการ (QC & Label)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-sans">
-              {grns.map(g => {
+              {filteredGrns.map((g) => {
                 const mat = rawMaterials.find(rm => rm.id === g.raw_material_id);
                 const po = purchaseOrders.find(p => p.id === g.purchase_order_id);
-                const displayPo = po ? po.code : (g.po_number || `PO-${g.purchase_order_id || '001'}`);
+                const displayPo = po ? po.code : (g.po_number || "-");
+                const inspection = qcInspections.find(qi => qi.grn_no === g.code);
+                const lot = lots.find(l => l.grn_no === g.code);
+                const qcStatus = inspection ? inspection.qc_status : (g.qc_status || "Pending QC");
+                const hasCoa = g.coa_url || inspection?.coa_status === "Attached";
+                const isPassed = qcStatus === "QC Passed";
+                const isPending = qcStatus === "Pending QC" || qcStatus === "Under Inspection";
+
                 return (
-                  <tr key={g.id} className="hover:bg-slate-50/80">
-                    <td className="p-3 font-bold font-mono text-emerald-600">{g.code}</td>
-                    <td className="p-3 font-mono text-slate-500">{g.receive_date || new Date().toISOString().slice(0, 10)}</td>
-                    <td className="p-3 font-mono text-slate-600 font-bold">{displayPo}</td>
-                    <td className="p-3 font-bold text-slate-800">{mat ? mat.name : "วัตถุดิบเคมีทั่วไป"}</td>
-                    <td className="p-3 text-right font-extrabold font-mono text-slate-800">{g.received_qty.toLocaleString()} {mat ? (mat.unit || "KG.") : ""}</td>
-                    <td className="p-3 text-right font-mono text-slate-700 font-bold">
-                      {g.unit_price ? `฿${g.unit_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "-"}
-                    </td>
-                    <td className="p-3 font-bold font-mono text-emerald-700">{g.lot_number}</td>
-                    <td className="p-3 font-mono text-slate-600 font-bold">{g.expiry_date}</td>
-                    <td className="p-3 text-slate-500 font-semibold">{g.receiver}</td>
-                    <td className="p-3 text-center">
-                      {onDeleteGrn && (
-                        <button
-                          onClick={() => setDeleteTarget({ id: g.id, name: `ใบรับเข้า ${g.code}` })}
-                          className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer active:scale-95"
-                          title="ลบใบรับเข้า GRN"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                  <tr key={g.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="p-3 font-mono">
+                      <div className="font-bold text-emerald-700">{g.code}</div>
+                      <div className="text-[10px] text-slate-500 font-medium">Lot: {g.lot_number || g.supplier_lot_no || "-"}</div>
+                      {displayPo !== "-" && (
+                        <div className="text-[9px] text-slate-400 font-mono">PO: {displayPo}</div>
                       )}
+                    </td>
+                    <td className="p-3">
+                      <span className="font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.5 rounded text-[10px] mr-1.5">
+                        {mat?.code || g.material_code || "RM-CHEM"}
+                      </span>
+                      <strong className="text-slate-900 font-bold block mt-0.5">
+                        {mat ? mat.name : (g.material_name || "วัตถุดิบเคมีทั่วไป")}
+                      </strong>
+                    </td>
+                    <td className="p-3 text-slate-700 font-semibold">
+                      <div>{g.supplier_name || mat?.supplier_name || mat?.supplier || "IDEVA / De Roma"}</div>
+                      <div className="text-[10px] text-slate-400">{g.appearance || "ของเหลว"}</div>
+                    </td>
+                    <td className="p-3 text-right font-mono">
+                      <span className="font-black text-slate-800 text-sm">
+                        {g.received_qty.toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-slate-500 ml-1 font-bold">
+                        {mat ? (mat.unit || "KG.") : "KG."}
+                      </span>
+                      {g.unit_price > 0 && (
+                        <div className="text-[10px] text-slate-400">
+                          ฿{g.unit_price.toLocaleString()}/KG
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-3 text-center font-mono">
+                      <div className="text-slate-700 font-bold text-[11px]">{g.receive_date || "-"}</div>
+                      <div className="text-slate-400 text-[10px]">Exp: {g.expiry_date || "-"}</div>
+                    </td>
+                    <td className="p-3 text-center">
+                      <button
+                        type="button"
+                        onClick={() => setActiveCoaModalTarget({ grn: g, lot, inspection })}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${
+                          hasCoa
+                            ? "bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200 shadow-2xs"
+                            : "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
+                        }`}
+                        title="คลิกเพื่อแนบหรือดูเอกสาร COA"
+                      >
+                        <FileText className="w-3 h-3" />
+                        {hasCoa ? "ดู COA แนบแล้ว" : "+ แนบ COA"}
+                      </button>
+                    </td>
+                    <td className="p-3 text-center">
+                      <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                        isPassed
+                          ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                          : isPending
+                          ? "bg-amber-100 text-amber-800 border-amber-300 animate-pulse"
+                          : "bg-red-100 text-red-800 border-red-300"
+                      }`}>
+                        {isPassed && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
+                        {isPending && <Clock className="w-3 h-3 text-amber-600" />}
+                        {qcStatus}
+                      </span>
+                    </td>
+                    <td className="p-3 text-center">
+                      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                        {/* 1. ปุ่ม ตรวจรับเช็คคุณภาพ */}
+                        <button
+                          type="button"
+                          onClick={() => handleOpenQcInspection(g)}
+                          className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                          title="กดตรวจรับเช็คคุณภาพวัตถุดิบ"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" /> ตรวจ QC
+                        </button>
+
+                        {/* 2. ปุ่ม พิมพ์ป้ายผ่าน QC สีเขียว FM-QC-17 REV:01 */}
+                        <button
+                          type="button"
+                          onClick={() => setActivePrintLabelTarget({ inspection, lot, grn: g })}
+                          className="px-2 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                          title="พิมพ์ป้ายชี้บ่งสีเขียว FM-QC-17 REV:01 พร้อมบาร์โค้ดนับสต็อก"
+                        >
+                          <Printer className="w-3.5 h-3.5" /> ป้ายผ่าน QC
+                        </button>
+
+                        {/* Delete GRN Button */}
+                        {onDeleteGrn && (
+                          <button
+                            onClick={() => setDeleteTarget({ id: g.id, name: `ใบรับเข้า ${g.code}` })}
+                            className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            title="ลบใบรับเข้า GRN"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
               })}
-              {grns.length === 0 && (
+              {filteredGrns.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="p-8 text-center text-slate-400 italic">
-                    ยังไม่มีข้อมูลการรับเคมีภัณฑ์เข้าคลัง
+                  <td colSpan={8} className="p-8 text-center text-slate-400 italic bg-slate-50">
+                    ไม่พบข้อมูลการรับเข้าวัตถุดิบเคมีภัณฑ์
                   </td>
                 </tr>
               )}
@@ -1512,167 +1880,215 @@ export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDelet
         </div>
       </div>
 
-      {/* บันทึกรับเข้า (GRN) Modal */}
+      {/* บันทึกรับเข้า (GRN) Form Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col">
-            <div className="flex items-center justify-between p-5 border-b border-slate-150 bg-slate-50/85">
-              <h3 className="text-sm md:text-base lg:text-lg font-extrabold text-slate-850 flex items-center gap-2">
-                <Truck className="w-5 h-5 text-emerald-600" />
-                บันทึกใบรับเข้าคลังเคมีภัณฑ์ (GRN)
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-900 text-white">
+              <h3 className="text-sm font-bold flex items-center gap-2">
+                <Truck className="w-4 h-4 text-emerald-400" />
+                บันทึกใบรับเข้าคลังเคมีภัณฑ์ (Goods Receive Note)
               </h3>
               <button 
                 onClick={() => setIsModalOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-650 hover:bg-slate-200/50 rounded-lg cursor-pointer transition-colors"
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="flex flex-col flex-1">
-              <div className="p-6 md:p-8 space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">เลขที่ใบรับเข้า (GRN)</label>
-                    <input
-                      type="text"
-                      value={code}
-                      disabled
-                      className="w-full px-4 py-2.5 border border-slate-250 bg-slate-50 text-slate-500 rounded-xl text-xs md:text-sm font-bold font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">วันที่นำเข้า (Import Date)</label>
-                    <input
-                      type="date"
-                      value={receiveDate}
-                      onChange={(e) => setReceiveDate(e.target.value)}
-                      required
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-semibold focus:outline-none focus:border-blue-500 bg-white text-slate-800"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">อ้างอิงใบสั่งซื้อ PO</label>
-                    <select
-                      value={purchaseOrderId}
-                      onChange={(e) => handlePurchaseOrderChange(Number(e.target.value))}
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-semibold focus:outline-none focus:border-blue-500 bg-white cursor-pointer"
-                    >
-                      <option value="">-- เลือกใบจัดซื้อ PO (ถ้ามี) --</option>
-                      {purchaseOrders.map(po => (
-                        <option key={po.id} value={po.id}>{po.code} ({po.supplier})</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">เลขที่ PO (กรอกเองได้)</label>
-                    <input
-                      type="text"
-                      value={poNumber}
-                      onChange={(e) => setPoNumber(e.target.value)}
-                      placeholder="เช่น PO-2026-088"
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-bold font-mono focus:outline-none focus:border-blue-500 bg-white text-slate-800"
-                    />
-                  </div>
-                </div>
-
+            <form onSubmit={handleSubmit} className="p-5 overflow-y-auto space-y-3.5 flex-1 text-xs">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">เลือกวัตถุดิบเคมีที่รับเข้า <span className="text-red-500">*</span></label>
-                  <select
-                    value={materialId}
-                    onChange={(e) => handleMaterialChange(Number(e.target.value))}
+                  <label className="block font-bold text-slate-700 uppercase mb-1">เลขที่ใบรับเข้า (GRN)</label>
+                  <input
+                    type="text"
+                    value={code}
+                    disabled
+                    className="w-full px-3 py-1.5 border border-slate-300 bg-slate-100 text-slate-500 rounded-xl font-bold font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">วันที่นำเข้า (Receive Date)</label>
+                  <input
+                    type="date"
+                    value={receiveDate}
+                    onChange={(e) => setReceiveDate(e.target.value)}
                     required
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-bold focus:outline-none focus:border-blue-500 bg-white cursor-pointer"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-semibold bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">อ้างอิงใบสั่งซื้อ PO</label>
+                  <select
+                    value={purchaseOrderId}
+                    onChange={(e) => handlePurchaseOrderChange(Number(e.target.value))}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl bg-white"
                   >
-                    <option value="">-- เลือกรายการเคมีภัณฑ์ --</option>
-                    {rawMaterials.map(rm => (
-                      <option key={rm.id} value={rm.id}>{rm.code} - {rm.name} ({rm.supplier_name || rm.supplier || 'ทั่วไป'})</option>
+                    <option value="">-- เลือกใบจัดซื้อ PO (ถ้ามี) --</option>
+                    {purchaseOrders.map(po => (
+                      <option key={po.id} value={po.id}>{po.code} ({po.supplier})</option>
                     ))}
                   </select>
                 </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">จำนวนรับจริง</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={receivedQty}
-                      onChange={(e) => setReceivedQty(parseFloat(e.target.value) || 0)}
-                      required
-                      placeholder="0.00"
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-bold font-mono focus:outline-none focus:border-blue-500 bg-white text-right text-slate-800"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">ราคาต่อหน่วย (บาท)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={unitPrice}
-                      onChange={(e) => setUnitPrice(parseFloat(e.target.value) || 0)}
-                      placeholder="0.00"
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-bold font-mono focus:outline-none focus:border-blue-500 bg-white text-right text-slate-800"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">Lot Number สารเคมี <span className="text-red-500">*</span></label>
-                    <input
-                      type="text"
-                      value={lotNumber}
-                      onChange={(e) => setLotNumber(e.target.value)}
-                      required
-                      placeholder="เช่น L240601-01"
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-bold font-mono focus:outline-none focus:border-blue-500 bg-white text-slate-800"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">วันหมดอายุล๊อต <span className="text-red-500">*</span></label>
-                    <input
-                      type="date"
-                      value={expiryDate}
-                      onChange={(e) => setExpiryDate(e.target.value)}
-                      required
-                      className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-semibold focus:outline-none focus:border-blue-500 bg-white text-slate-800"
-                    />
-                  </div>
-                </div>
-
                 <div>
-                  <label className="block text-xs md:text-sm font-bold text-slate-700 uppercase mb-1.5">ผู้เซ็นต์รับของเข้า</label>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">เลขที่ PO (ถ้าไม่ได้เลือก)</label>
+                  <input
+                    type="text"
+                    value={poNumber}
+                    onChange={(e) => setPoNumber(e.target.value)}
+                    placeholder="เช่น PO-2026-088"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 uppercase mb-1">
+                  เลือกวัตถุดิบเคมีที่รับเข้า <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={materialId}
+                  onChange={(e) => handleMaterialChange(Number(e.target.value))}
+                  required
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold bg-white"
+                >
+                  <option value="">-- เลือกรายการเคมีภัณฑ์ --</option>
+                  {rawMaterials.map(rm => (
+                    <option key={rm.id} value={rm.id}>{rm.code} - {rm.name} ({rm.supplier_name || rm.supplier || 'ทั่วไป'})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">ผู้ผลิต / ผู้จำหน่าย (Supplier)</label>
+                  <input
+                    type="text"
+                    value={supplierName}
+                    onChange={(e) => setSupplierName(e.target.value)}
+                    placeholder="เช่น IDEVA / De Roma"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">ลักษณะสินค้า (Appearance)</label>
+                  <input
+                    type="text"
+                    value={appearance}
+                    onChange={(e) => setAppearance(e.target.value)}
+                    placeholder="เช่น ของเหลว ใส ไม่มีตะกอน"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">จำนวนรับจริง (KG)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={receivedQty}
+                    onChange={(e) => setReceivedQty(parseFloat(e.target.value) || 0)}
+                    required
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-bold font-mono text-right"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">ราคาต่อหน่วย (บาท)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={unitPrice}
+                    onChange={(e) => setUnitPrice(parseFloat(e.target.value) || 0)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-bold font-mono text-right"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">จำนวนชิ้น/ถัง (Pieces)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={labelPieces}
+                    onChange={(e) => setLabelPieces(parseInt(e.target.value) || 1)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-bold text-center"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">Supplier Lot No. *</label>
+                  <input
+                    type="text"
+                    value={lotNumber}
+                    onChange={(e) => setLotNumber(e.target.value)}
+                    required
+                    placeholder="เช่น L240601-01"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">วันหมดอายุ *</label>
+                  <input
+                    type="date"
+                    value={expiryDate}
+                    onChange={(e) => setExpiryDate(e.target.value)}
+                    required
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">วันที่ทดสอบซ้ำ</label>
+                  <input
+                    type="date"
+                    value={retestDate}
+                    onChange={(e) => setRetestDate(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">ผู้เซ็นต์รับของเข้า</label>
                   <input
                     type="text"
                     value={receiver}
                     onChange={(e) => setReceiver(e.target.value)}
                     required
-                    className="w-full px-4 py-2.5 border border-slate-300 rounded-xl text-xs md:text-sm font-semibold focus:outline-none focus:border-blue-500 bg-white text-slate-800"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 uppercase mb-1">ลิงก์เอกสาร COA (ถ้ามี)</label>
+                  <input
+                    type="text"
+                    value={coaUrl}
+                    onChange={(e) => setCoaUrl(e.target.value)}
+                    placeholder="https://... หรือแนบภายหลัง"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-xl font-mono"
                   />
                 </div>
               </div>
 
-              <div className="p-5 bg-slate-50 border-t border-slate-150 flex justify-end gap-3">
+              <div className="pt-3 border-t border-slate-200 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  className="px-5 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-xl text-xs md:text-sm font-bold hover:bg-slate-100 transition-all cursor-pointer shadow-sm"
+                  className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl font-bold hover:bg-slate-200"
                 >
                   ยกเลิก
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs md:text-sm font-bold flex items-center gap-1.5 transition-all shadow-lg shadow-emerald-600/10 cursor-pointer"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
                 >
-                  <Save className="w-4 h-4" /> บันทึกรับเข้าคลัง
+                  <Save className="w-4 h-4" /> บันทึกรับเข้าคลัง & สร้างล็อต
                 </button>
               </div>
             </form>
@@ -1680,6 +2096,182 @@ export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDelet
         </div>
       )}
 
+      {/* QC INSPECTION MODAL */}
+      {activeQcModal && (
+        <div className="fixed inset-0 bg-black/60 z-[9990] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold">
+                    บันทึกผลการตรวจสอบคุณภาพ (QC Inspection)
+                  </h3>
+                  <p className="text-[11px] text-slate-300 font-mono">
+                    GRN: {activeQcModal.grn_no} | {activeQcModal.material_code} - {activeQcModal.material_name}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setActiveQcModal(null)}
+                className="p-1 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveQcModalSubmit} className="p-5 overflow-y-auto space-y-4 flex-1 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <div>
+                  <span className="text-slate-400 font-bold block text-[10px]">รหัสเคมีดิบ</span>
+                  <span className="font-mono font-bold text-emerald-700">{activeQcModal.material_code}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-bold block text-[10px]">จำนวนรับเข้า</span>
+                  <span className="font-mono font-bold text-slate-800">{activeQcModal.received_qty} {activeQcModal.purchase_unit}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-bold block text-[10px]">Supplier Lot No</span>
+                  <span className="font-mono font-bold text-slate-800">{activeQcModal.supplier_lot_no}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 font-bold block text-[10px]">วันหมดอายุ</span>
+                  <span className="font-mono font-bold text-slate-800">{activeQcModal.expiry_date}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">ผลการตัดสินใจ QC Status *</label>
+                  <select
+                    value={qcStatusInput}
+                    onChange={(e) => setQcStatusInput(e.target.value as any)}
+                    className="w-full px-3 py-2 font-bold rounded-xl border border-slate-300 bg-white"
+                  >
+                    <option value="QC Passed">🟢 อนุมัติผ่านการตรวจ (QC Passed)</option>
+                    <option value="Under Inspection">🔵 อยู่ระหว่างตรวจสอบ</option>
+                    <option value="QC Failed">🔴 ไม่ผ่านการตรวจ (QC Failed)</option>
+                    <option value="Quarantine">🛑 กักกันวัตถุดิบ (Quarantine)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">ผู้ตรวจสอบ (Inspector) *</label>
+                  <input
+                    type="text"
+                    required
+                    value={qcInspector}
+                    onChange={(e) => setQcInspector(e.target.value)}
+                    className="w-full px-3 py-2 font-bold rounded-xl border border-slate-300 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">ผู้อนุมัติ (Approver) *</label>
+                  <input
+                    type="text"
+                    required
+                    value={qcApprover}
+                    onChange={(e) => setQcApprover(e.target.value)}
+                    className="w-full px-3 py-2 font-bold rounded-xl border border-slate-300 bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">ลักษณะทางกายภาพ (Appearance)</label>
+                  <input
+                    type="text"
+                    value={qcAppearance}
+                    onChange={(e) => setQcAppearance(e.target.value)}
+                    placeholder="ของเหลวใส ไม่มีตะกอน กลิ่นหอมวานิลลา"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">สถานะ Certificate of Analysis (COA)</label>
+                  <select
+                    value={qcCoaStatus}
+                    onChange={(e) => setQcCoaStatus(e.target.value as any)}
+                    className="w-full px-3 py-2 font-bold rounded-xl border border-slate-300 bg-white"
+                  >
+                    <option value="Attached">✓ แนบเอกสาร COA ครบถ้วน</option>
+                    <option value="Missing COA">⚠️ ขาดเอกสาร COA</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">หมายเหตุบันทึกผลการตรวจสอบ</label>
+                <textarea
+                  rows={2}
+                  value={qcRemarks}
+                  onChange={(e) => setQcRemarks(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-200 flex justify-between items-center">
+                <button
+                  type="button"
+                  onClick={() => setActiveQcModal(null)}
+                  className="px-4 py-2 bg-slate-100 text-slate-700 font-bold rounded-xl"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md cursor-pointer flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> บันทึกผลการตรวจ QC
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* COA DOCUMENT MODAL */}
+      {activeCoaModalTarget && (
+        <CoaDocumentModal
+          grn={activeCoaModalTarget.grn}
+          lot={activeCoaModalTarget.lot}
+          inspection={activeCoaModalTarget.inspection}
+          onClose={() => setActiveCoaModalTarget(null)}
+          onSaveCoa={async (payload) => {
+            if (onSaveCoa) {
+              await onSaveCoa(payload);
+            }
+          }}
+        />
+      )}
+
+      {/* QC PASS LABEL PRINT MODAL (FM-QC-17 REV:01) */}
+      {activePrintLabelTarget && (
+        <QcPassLabelModal
+          inspection={activePrintLabelTarget.inspection}
+          lot={activePrintLabelTarget.lot}
+          grn={activePrintLabelTarget.grn}
+          onClose={() => setActivePrintLabelTarget(null)}
+        />
+      )}
+
+      {/* STOCK COUNT SCANNER MODAL */}
+      {isStockCountOpen && (
+        <StockCountModal
+          rawMaterials={rawMaterials}
+          lots={lots}
+          grns={grns}
+          auditLogs={auditLogs}
+          onClose={() => setIsStockCountOpen(false)}
+          onSaveStockCount={async (params) => {
+            if (onSaveStockCount) {
+              await onSaveStockCount(params);
+            }
+          }}
+        />
+      )}
+
+      {/* Confirm Delete Dialog */}
       <ConfirmDeleteDialog
         isOpen={!!deleteTarget}
         title="ยืนยันการลบใบรับเข้าเคมีภัณฑ์ (GRN)"
@@ -1694,6 +2286,7 @@ export function GrnsPage({ grns, rawMaterials, purchaseOrders, onAddGrn, onDelet
     </div>
   );
 }
+
 
 // ============================================================================
 // REPORTS PAGE

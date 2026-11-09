@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { QcInspection, RawMaterialLot, RawMaterial, Grn, AuditLog } from "../types";
 import QcPassLabelModal from "./QcPassLabelModal";
+import CoaDocumentModal from "./CoaDocumentModal";
 import SearchableSelect from "./SearchableSelect";
 
 interface IncomingQcPageProps {
@@ -32,6 +33,7 @@ interface IncomingQcPageProps {
   grns: Grn[];
   onSaveQcInspection: (qc: QcInspection) => Promise<void>;
   onUpdateLotStatus: (lotId: number, qcStatus: any, stockStatus: any) => Promise<void>;
+  onSaveCoa?: (payload: any) => Promise<void>;
   onLogAudit?: (log: Omit<AuditLog, "id">) => Promise<void>;
 }
 
@@ -42,12 +44,14 @@ export default function IncomingQcPage({
   grns,
   onSaveQcInspection,
   onUpdateLotStatus,
+  onSaveCoa,
   onLogAudit
 }: IncomingQcPageProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [activeQcModal, setActiveQcModal] = useState<QcInspection | null>(null);
   const [printLabelModalQc, setPrintLabelModalQc] = useState<QcInspection | null>(null);
+  const [activeCoaModalQc, setActiveCoaModalQc] = useState<QcInspection | null>(null);
 
   // Form State for Inspection Modal
   const [inspectorName, setInspectorName] = useState("สุรตน์");
@@ -266,14 +270,19 @@ export default function IncomingQcPage({
                     </td>
                     <td className="p-3 text-center font-mono text-slate-600">{qc.expiry_date}</td>
                     <td className="p-3 text-center">
-                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                        qc.coa_status === "Attached"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : "bg-amber-50 text-amber-700 border-amber-200"
-                      }`}>
+                      <button
+                        type="button"
+                        onClick={() => setActiveCoaModalQc(qc)}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${
+                          qc.coa_status === "Attached"
+                            ? "bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200 shadow-2xs"
+                            : "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200"
+                        }`}
+                        title="คลิกเพื่อแนบหรือดูเอกสาร COA"
+                      >
                         <FileText className="w-3 h-3" />
-                        {qc.coa_status === "Attached" ? "มี COA" : "Missing COA"}
-                      </span>
+                        {qc.coa_status === "Attached" ? "ดู COA แนบแล้ว" : "+ แนบ COA"}
+                      </button>
                     </td>
                     <td className="p-3 text-center">
                       <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
@@ -533,7 +542,23 @@ export default function IncomingQcPage({
         <QcPassLabelModal
           inspection={printLabelModalQc}
           lot={lots.find((l) => l.grn_no === printLabelModalQc.grn_no) || null}
+          grn={grns.find((g) => g.code === printLabelModalQc.grn_no) || null}
           onClose={() => setPrintLabelModalQc(null)}
+        />
+      )}
+
+      {/* COA DOCUMENT MODAL */}
+      {activeCoaModalQc && (
+        <CoaDocumentModal
+          inspection={activeCoaModalQc}
+          lot={lots.find((l) => l.grn_no === activeCoaModalQc.grn_no) || null}
+          grn={grns.find((g) => g.code === activeCoaModalQc.grn_no) || null}
+          onClose={() => setActiveCoaModalQc(null)}
+          onSaveCoa={async (payload) => {
+            if (onSaveCoa) {
+              await onSaveCoa(payload);
+            }
+          }}
         />
       )}
     </div>

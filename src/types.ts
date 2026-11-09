@@ -62,6 +62,7 @@ export interface RawMaterial {
 export interface RawMaterialLot {
   id: number;
   lot_id_code: string;        // System Generated Lot ID e.g. LOT-202611-001
+  lot_code?: string;          // Alias for lot_id_code
   material_id: number;
   material_code?: string;
   material_name?: string;
@@ -247,6 +248,8 @@ export interface Grn {
   total_amount: number;
   invoice_number?: string;
   coa_url?: string;
+  appearance?: string;
+  label_pieces?: number;
   qc_status: "Pending QC" | "Under Inspection" | "QC Passed" | "QC Failed" | "Quarantine";
   receiver: string;
   receive_date: string;
