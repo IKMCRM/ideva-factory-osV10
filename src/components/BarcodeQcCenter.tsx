@@ -465,37 +465,132 @@ export default function BarcodeQcCenter({
     status: "adjusted" | "pending";
   }[]>([]);
 
-  // Focus scanner input on load or tab change
+  // -------------------------------------------------------------
+  // PHYSICAL BARCODE SCANNER HARDWARE DECODER & AUTO-FOCUS ENGINE
+  // -------------------------------------------------------------
+  const scanBufferRef = useRef<string>("");
+  const lastKeyTimeRef = useRef<number>(0);
+
+  // Global keyboard listener for hardware USB/Wireless barcode guns
   useEffect(() => {
-    if (activeTab === "scanner_counter") {
-      setTimeout(() => {
-        scannerInputRef.current?.focus();
-      }, 100);
-    }
+    if (activeTab !== "scanner_counter") return;
+
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      const isEditingUnrelatedInput =
+        activeEl &&
+        activeEl !== scannerInputRef.current &&
+        (activeEl.tagName === "TEXTAREA" ||
+          activeEl.tagName === "SELECT" ||
+          (activeEl.tagName === "INPUT" &&
+            (activeEl as HTMLInputElement).type !== "text" &&
+            (activeEl as HTMLInputElement).type !== "number") ||
+          activeEl.getAttribute("contenteditable") === "true");
+
+      if (isEditingUnrelatedInput) return;
+
+      const currentTime = Date.now();
+      const timeDiff = currentTime - lastKeyTimeRef.current;
+      lastKeyTimeRef.current = currentTime;
+
+      // Physical barcode scanner guns fire rapid keystrokes (< 80ms interval)
+      if (timeDiff > 80) {
+        scanBufferRef.current = "";
+      }
+
+      if (e.key === "Enter") {
+        const rawBuffer = scanBufferRef.current.trim();
+        if (rawBuffer.length >= 2) {
+          scanBufferRef.current = "";
+          setScannedInput(rawBuffer);
+          handlePerformBarcodeLookup(rawBuffer);
+          e.preventDefault();
+        } else if (activeEl === scannerInputRef.current && scannedInput.trim()) {
+          handlePerformBarcodeLookup(scannedInput);
+          e.preventDefault();
+        }
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        // Accumulate scanned character
+        scanBufferRef.current += e.key;
+
+        // Auto-redirect focus to scanner input
+        if (activeEl !== scannerInputRef.current && scannerInputRef.current) {
+          scannerInputRef.current.focus();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, [activeTab, scannedInput, rawMaterialLots, grns, productionOrders, products]);
+
+  // Document click auto-refocus for scanner gun readiness
+  useEffect(() => {
+    if (activeTab !== "scanner_counter") return;
+
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        scannerInputRef.current &&
+        !target.closest("button") &&
+        !target.closest("input") &&
+        !target.closest("select") &&
+        !target.closest("textarea")
+      ) {
+        scannerInputRef.current.focus();
+      }
+    };
+
+    document.addEventListener("click", handleDocumentClick);
+    return () => {
+      document.removeEventListener("click", handleDocumentClick);
+    };
   }, [activeTab]);
 
-  // Find barcode matching function
+  // Hardware-compatible Barcode Lookup Function
   const handlePerformBarcodeLookup = (query: string) => {
-    const clean = query.trim();
+    // Clean control characters (STX/ETX), asterisks (*), and whitespace
+    const clean = query.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").replace(/\*+/g, "").trim();
     if (!clean) return;
 
     const upper = clean.toUpperCase();
-    const stripped = upper.replace(/^LOT-/, "").replace(/\*+/g, "");
 
-    // 1. Try matching raw_material_lots
+    // Parse composite label barcode format: LOT-[PRODUCT_CODE]-[RECEIVING_NO]-P[PIECE]
+    // e.g. LOT-RMFL-0257-6162960-P1
+    let parsedProductCode = "";
+    let parsedReceivingNo = "";
+    if (upper.startsWith("LOT-")) {
+      const parts = upper.split("-");
+      if (parts.length >= 3) {
+        parsedProductCode = parts[1]; // e.g. RMFL or RMFL-0257
+        if (parts.length >= 4) {
+          parsedProductCode = `${parts[1]}-${parts[2]}`;
+          parsedReceivingNo = parts[3];
+        } else {
+          parsedReceivingNo = parts[2];
+        }
+      }
+    }
+
+    // 1. Try matching raw_material_lots (by barcode string, lot_id_code, supplier_lot_no, or composite parts)
     const matchedLot = rawMaterialLots.find((l) => {
       const bCode = (l.barcode || "").toUpperCase();
       const lotId = (l.lot_id_code || "").toUpperCase();
       const supLot = (l.supplier_lot_no || "").toUpperCase();
       const matCode = (l.material_code || "").toUpperCase();
       const grn = (l.grn_no || "").toUpperCase();
+
       return (
         bCode === upper ||
         lotId === upper ||
         supLot === upper ||
         upper.includes(lotId) ||
         upper.includes(supLot) ||
-        (clean.includes(matCode) && clean.includes(grn))
+        (parsedProductCode && matCode.includes(parsedProductCode)) ||
+        (parsedReceivingNo && grn.includes(parsedReceivingNo)) ||
+        (clean.length >= 3 && (matCode.includes(upper) || grn.includes(upper)))
       );
     });
 
@@ -516,7 +611,7 @@ export default function BarcodeQcCenter({
         originalRef: matchedLot
       });
       setPhysicalCount(sysQty);
-      setStatusMessage({ text: `พบข้อมูลล็อตสารเคมี: ${matchedLot.material_name} (${matchedLot.lot_id_code})`, type: "success" });
+      setStatusMessage({ text: `[ยิงสำเร็จ 100%] พบล็อตสารเคมี: ${matchedLot.material_name} (${matchedLot.lot_id_code})`, type: "success" });
       return;
     }
 
@@ -524,7 +619,12 @@ export default function BarcodeQcCenter({
     const matchedMat = rawMaterials.find((m) => {
       const code = (m.code || "").toUpperCase();
       const name = (m.name || "").toUpperCase();
-      return code === upper || stripped.includes(code) || name.includes(upper);
+      return (
+        code === upper ||
+        upper.includes(code) ||
+        (parsedProductCode && code.includes(parsedProductCode)) ||
+        name.includes(upper)
+      );
     });
 
     if (matchedMat) {
@@ -540,15 +640,22 @@ export default function BarcodeQcCenter({
         originalRef: matchedMat
       });
       setPhysicalCount(matchedMat.stock_qty || 0);
-      setStatusMessage({ text: `พบรายการเคมีดิบ: ${matchedMat.name} (${matchedMat.code})`, type: "success" });
+      setStatusMessage({ text: `[ยิงสำเร็จ 100%] พบเคมีดิบ: ${matchedMat.name} (${matchedMat.code})`, type: "success" });
       return;
     }
 
-    // 3. Try matching GRN
+    // 3. Try matching GRNs
     const matchedGrn = grns.find((g) => {
       const code = (g.code || "").toUpperCase();
+      const grnNum = code.replace(/^GRN-/, "");
       const lot = (g.lot_number || g.supplier_lot_no || "").toUpperCase();
-      return code === upper || lot === upper || clean.includes(code);
+      return (
+        code === upper ||
+        lot === upper ||
+        upper.includes(code) ||
+        upper.includes(grnNum) ||
+        (parsedReceivingNo && (code.includes(parsedReceivingNo) || grnNum.includes(parsedReceivingNo)))
+      );
     });
 
     if (matchedGrn) {
@@ -566,7 +673,7 @@ export default function BarcodeQcCenter({
         originalRef: matchedGrn
       });
       setPhysicalCount(matchedGrn.received_qty || 0);
-      setStatusMessage({ text: `พบเอกสารรับเข้า: ${matchedGrn.code}`, type: "success" });
+      setStatusMessage({ text: `[ยิงสำเร็จ 100%] พบเอกสารรับเข้า GRN: ${matchedGrn.code}`, type: "success" });
       return;
     }
 
@@ -574,7 +681,13 @@ export default function BarcodeQcCenter({
     const matchedPo = productionOrders.find((p) => {
       const code = (p.code || "").toUpperCase();
       const pCode = (p.product_code || "").toUpperCase();
-      return code === upper || clean.includes(code) || pCode === upper;
+      return (
+        code === upper ||
+        pCode === upper ||
+        upper.includes(code) ||
+        upper.includes(pCode) ||
+        (parsedProductCode && pCode.includes(parsedProductCode))
+      );
     });
 
     if (matchedPo) {
@@ -591,14 +704,14 @@ export default function BarcodeQcCenter({
         originalRef: matchedPo
       });
       setPhysicalCount(matchedPo.quantity || 0);
-      setStatusMessage({ text: `พบใบสั่งผลิต: ${matchedPo.code}`, type: "success" });
+      setStatusMessage({ text: `[ยิงสำเร็จ 100%] พบใบสั่งผลิต: ${matchedPo.code}`, type: "success" });
       return;
     }
 
-    // 5. Try matching Products (FG)
+    // 5. Try matching Finished Goods Products
     const matchedProd = products.find((p) => {
       const code = (p.code || "").toUpperCase();
-      return code === upper || clean.includes(code);
+      return code === upper || upper.includes(code);
     });
 
     if (matchedProd) {
@@ -613,13 +726,13 @@ export default function BarcodeQcCenter({
         originalRef: matchedProd
       });
       setPhysicalCount(0);
-      setStatusMessage({ text: `พบสินค้าสำเร็จรูป: ${matchedProd.name}`, type: "success" });
+      setStatusMessage({ text: `[ยิงสำเร็จ 100%] พบสินค้าสำเร็จรูป: ${matchedProd.name}`, type: "success" });
       return;
     }
 
     // Not found
     if (soundEnabled) playScannerBeep("error");
-    setStatusMessage({ text: `ไม่พบข้อมูลสำหรับบาร์โค้ด "${clean}" ในฐานข้อมูล Firebase`, type: "error" });
+    setStatusMessage({ text: `ไม่พบข้อมูลสำหรับบาร์โค้ด "${clean}" ในระบบ Firebase`, type: "error" });
   };
 
   const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1673,11 +1786,17 @@ export default function BarcodeQcCenter({
                     <Scan className="w-5 h-5 animate-pulse" />
                   </div>
                   <div>
-                    <h3 className="text-base font-bold text-slate-900">
-                      จุดยิงสแกนเนอร์นับสต็อก (Barcode Gun Scanner)
-                    </h3>
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <h3 className="text-base font-bold text-slate-900">
+                        จุดยิงสแกนเนอร์นับสต็อก (Hardware Barcode Gun Station)
+                      </h3>
+                      <span className="px-2.5 py-0.5 bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-black rounded-full flex items-center gap-1.5 shadow-2xs">
+                        <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping shrink-0" />
+                        พร้อมรับสัญญาณยิง 100%
+                      </span>
+                    </div>
                     <p className="text-xs text-slate-500">
-                      ยิงบาร์โค้ดจากป้ายชิ้นงาน หรือพิมพ์รหัสเพื่อค้นหาและนับสต็อกทันที
+                      รองรับเครื่องยิงบาร์โค้ด USB/Wireless/Bluetooth ยิงบาร์โค้ดจากป้ายชิ้นงานได้ทันทีโดยไม่ต้องใช้เมาส์
                     </p>
                   </div>
                 </div>
