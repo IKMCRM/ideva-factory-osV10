@@ -205,9 +205,18 @@ export default function QcPassLabelModal({
   // Mode and formatting controls
   const [isEditMode, setIsEditMode] = useState(false);
   const [printAllMode, setPrintAllMode] = useState(false);
-  const [labelSize, setLabelSize] = useState<"standard" | "compact" | "a4_grid">("standard");
+  const [labelSize, setLabelSize] = useState<"thermal_80x50_portrait" | "standard" | "compact" | "a4_grid">("thermal_80x50_portrait");
+  const [selectedPieces, setSelectedPieces] = useState<number[]>([customData?.currentPiece || 1]);
   const [selectedQuickPreset, setSelectedQuickPreset] = useState<string>("");
   const [copiedCode, setCopiedCode] = useState(false);
+
+  // Sync selected pieces when totalPieces changes
+  useEffect(() => {
+    setSelectedPieces((prev) => {
+      const valid = prev.filter((p) => p <= totalPieces);
+      return valid.length > 0 ? valid : [1];
+    });
+  }, [totalPieces]);
 
   // Quick Preset Selector Handler
   const handleSelectPreset = (value: string) => {
@@ -380,6 +389,18 @@ export default function QcPassLabelModal({
             <span className="font-bold text-slate-600 text-[11px]">ขนาดป้าย:</span>
             <button
               type="button"
+              onClick={() => setLabelSize("thermal_80x50_portrait")}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                labelSize === "thermal_80x50_portrait"
+                  ? "bg-emerald-600 text-white border-emerald-600 shadow-2xs font-black ring-1 ring-emerald-300"
+                  : "bg-white text-slate-700 border-slate-300 hover:bg-slate-200"
+              }`}
+              title="ขนาด 80x50 มม. แนวตั้ง ตามม้วนสติ๊กเกอร์สีเขียว (50mm x 80mm)"
+            >
+              ⭐ 80x50mm แนวตั้ง
+            </button>
+            <button
+              type="button"
               onClick={() => setLabelSize("standard")}
               className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
                 labelSize === "standard"
@@ -388,7 +409,7 @@ export default function QcPassLabelModal({
               }`}
               title="ขนาด 100x75 มม. เหมาะสำหรับติดถัง แกลลอน ลัง กล่องใหญ่"
             >
-              มาตรฐาน 100x75mm
+              100x75mm
             </button>
             <button
               type="button"
@@ -398,9 +419,9 @@ export default function QcPassLabelModal({
                   ? "bg-emerald-600 text-white border-emerald-600 shadow-2xs"
                   : "bg-white text-slate-700 border-slate-300 hover:bg-slate-200"
               }`}
-              title="ขนาด 80x50 มม. เหมาะสำหรับติดขวด หรือชิ้นงานขนาดเล็ก"
+              title="ขนาด 80x50 มม. แนวนอน"
             >
-              กะทัดรัด 80x50mm
+              80x50mm แนวนอน
             </button>
             <button
               type="button"
@@ -546,31 +567,42 @@ export default function QcPassLabelModal({
         )}
 
         {/* Piece Selector & Print-All Toggle */}
+        {/* Piece Selector & Multi-Piece Checkboxes */}
         <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-slate-600">เลือกชิ้นงานที่ต้องการพิมพ์ (Workpiece No.):</span>
-            <div className="flex items-center gap-1">
-              {piecesArray.slice(0, 8).map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => setCurrentPiece(p)}
-                  className={`w-7 h-7 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
-                    currentPiece === p
-                      ? "bg-emerald-600 text-white shadow-xs"
-                      : "bg-white text-slate-700 border border-slate-300 hover:bg-slate-200"
-                  }`}
-                >
-                  {p}
-                </button>
-              ))}
-              {totalPieces > 8 && (
-                <span className="text-slate-400 font-bold px-1">... ถึง {totalPieces}</span>
-              )}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-slate-700">ติ๊กเลือกชิ้นงานที่ต้องการพิมพ์:</span>
+            <div className="flex items-center gap-1 flex-wrap">
+              {piecesArray.map((p) => {
+                const isChecked = selectedPieces.includes(p);
+                return (
+                  <label
+                    key={p}
+                    className={`px-2 py-0.5 rounded text-xs font-mono font-bold border transition-all cursor-pointer flex items-center gap-1 ${
+                      isChecked
+                        ? "bg-emerald-600 text-white border-emerald-600 shadow-2xs font-black"
+                        : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => {
+                        if (isChecked) {
+                          setSelectedPieces(selectedPieces.filter((x) => x !== p));
+                        } else {
+                          setSelectedPieces([...selectedPieces, p].sort((a, b) => a - b));
+                        }
+                      }}
+                      className="sr-only"
+                    />
+                    <span>ชิ้นที่ {p}</span>
+                  </label>
+                );
+              })}
               <button
                 type="button"
                 onClick={() => setTotalPieces(totalPieces + 1)}
-                className="px-2 py-1 bg-white hover:bg-slate-200 border border-slate-300 text-slate-600 rounded-lg text-[10px] font-bold cursor-pointer"
+                className="px-2 py-0.5 bg-white hover:bg-slate-200 border border-slate-300 text-slate-600 rounded text-[10px] font-bold cursor-pointer"
                 title="เพิ่มจำนวนชิ้นงาน/ถัง"
               >
                 + เพิ่มชิ้น
@@ -578,15 +610,22 @@ export default function QcPassLabelModal({
             </div>
           </div>
 
-          <label className="flex items-center gap-1.5 font-bold text-slate-800 cursor-pointer bg-white px-3 py-1 rounded-lg border border-slate-200 shadow-2xs">
-            <input
-              type="checkbox"
-              checked={printAllMode}
-              onChange={(e) => setPrintAllMode(e.target.checked)}
-              className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-            />
-            <span>พิมพ์ทุกชิ้นงานพร้อมกัน (ชิ้นที่ 1 ถึง {totalPieces})</span>
-          </label>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedPieces(piecesArray)}
+              className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-bold rounded border border-emerald-200 hover:bg-emerald-100 cursor-pointer text-[11px]"
+            >
+              เลือกทุกชิ้น ({totalPieces})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedPieces([1])}
+              className="px-2 py-0.5 bg-slate-100 text-slate-600 font-bold rounded border border-slate-200 hover:bg-slate-200 cursor-pointer text-[11px]"
+            >
+              เฉพาะชิ้นที่ 1
+            </button>
+          </div>
         </div>
 
         {/* Printable Label View Area */}
@@ -595,13 +634,15 @@ export default function QcPassLabelModal({
             ? "flex-wrap justify-center items-start" 
             : "flex-col items-center justify-start"
         }`}>
-          {(printAllMode ? piecesArray : [currentPiece]).map((pieceNum) => (
+          {(selectedPieces.length > 0 ? selectedPieces : [currentPiece]).map((pieceNum) => (
             <div
               key={pieceNum}
               ref={pieceNum === currentPiece ? printRef : undefined}
               className={`printable-qc-label-item rounded-xl border-3 border-emerald-950 p-4 sm:p-5 shadow-xl font-sans relative overflow-hidden select-none transition-all ${
-                labelSize === "compact"
-                  ? "w-full max-w-[380px] text-[11px]"
+                labelSize === "thermal_80x50_portrait"
+                  ? "w-full max-w-[400px] sm:max-w-[440px] text-xs sm:text-sm"
+                  : labelSize === "compact"
+                  ? "w-full max-w-[420px] text-xs sm:text-sm"
                   : labelSize === "a4_grid"
                   ? "w-[46%] min-w-[340px] max-w-[420px]"
                   : "w-full max-w-[480px]"
@@ -834,17 +875,37 @@ export default function QcPassLabelModal({
               className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md transition-all"
             >
               <Printer className="w-4 h-4" /> 
-              {printAllMode 
-                ? `พิมพ์ครบทั้งหมด ${totalPieces} ชิ้นงาน` 
-                : `พิมพ์ป้ายชิ้นที่ ${currentPiece}`}
+              {`🖨️ สั่งพิมพ์ใบละ 80x50 MM แนวตั้ง (${selectedPieces.length} ใบ)`}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Print Stylesheet for Thermal and A4 Stickers */}
+      {/* Print Stylesheet for Thermal 80x50 Portrait and A4 Stickers */}
       <style>{`
         @media print {
+          @page {
+            ${
+              labelSize === "thermal_80x50_portrait"
+                ? "size: 50mm 80mm; margin: 0mm;"
+                : labelSize === "compact"
+                ? "size: 80mm 50mm; margin: 0mm;"
+                : labelSize === "standard"
+                ? "size: 100mm 75mm; margin: 0mm;"
+                : "size: A4 portrait; margin: 8mm;"
+            }
+          }
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+            ${labelSize === "thermal_80x50_portrait" ? "width: 50mm !important; height: auto !important;" : ""}
+            overflow: visible !important;
+          }
+          div, section, main, article {
+            overflow: visible !important;
+            max-height: none !important;
+          }
           body * {
             visibility: hidden !important;
           }
@@ -853,15 +914,26 @@ export default function QcPassLabelModal({
           }
           .printable-qc-label-item {
             position: relative !important;
-            margin: 0 auto 20px auto !important;
+            display: block !important;
+            box-sizing: border-box !important;
+            margin: 0 auto !important;
             page-break-after: always !important;
-            width: 100% !important;
-            max-width: 500px !important;
+            break-after: page !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            ${
+              labelSize === "thermal_80x50_portrait"
+                ? "width: 50mm !important; min-width: 50mm !important; max-width: 50mm !important; height: 80mm !important; min-height: 80mm !important; max-height: 80mm !important; padding: 2mm !important;"
+                : labelSize === "compact"
+                ? "width: 80mm !important; min-width: 80mm !important; max-width: 80mm !important; height: 50mm !important; min-height: 50mm !important; max-height: 50mm !important; padding: 2mm !important;"
+                : "width: 100% !important; max-width: 500px !important;"
+            }
             background-color: #52d265 !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
-            border: 3px solid #052e16 !important;
+            border: 2px solid #052e16 !important;
             box-shadow: none !important;
+            overflow: hidden !important;
           }
         }
       `}</style>

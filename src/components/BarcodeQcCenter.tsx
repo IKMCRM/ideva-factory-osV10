@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   Barcode as BarcodeIcon,
   Printer,
@@ -28,7 +28,10 @@ import {
   ArrowRight,
   ExternalLink,
   Camera,
-  X
+  X,
+  CheckSquare,
+  Square,
+  CheckCheck
 } from "lucide-react";
 import {
   RawMaterial,
@@ -64,6 +67,34 @@ interface BarcodeQcCenterProps {
   }) => Promise<void>;
   onSaveQcInspection?: (qc: Partial<QcInspection>) => Promise<void>;
   onLogAudit?: (log: Partial<AuditLog>) => Promise<void>;
+}
+
+export type LabelPaperSize = 
+  | "thermal_80x50_portrait"   // 50mm Width x 80mm Height แนวตั้ง (Default ตามม้วนสติ๊กเกอร์สีเขียว 80x50mm)
+  | "thermal_80x50_landscape"  // 80mm Width x 50mm Height แนวนอน
+  | "thermal_100x75"           // 100mm Width x 75mm Height
+  | "thermal_100x150"          // 100mm Width x 150mm Height
+  | "a4_sheet";                // A4 Sheet multi-grid
+
+export interface BatchItemEntry {
+  id: string;
+  selected: boolean;
+  copies: number;
+  category: "raw_material" | "packaging" | "product";
+  productCode: string;
+  productName: string;
+  receivingNo: string;
+  supplierName: string;
+  appearance: string;
+  retestDate: string;
+  receiveDate: string;
+  expiryDate: string;
+  inspector: string;
+  approver: string;
+  approvalDate: string;
+  totalPieces: number;
+  selectedPieces: number[];
+  sourceType: "lot" | "grn" | "prod" | "fg";
 }
 
 // Sound generator using Web Audio API for hardware scanner beep simulation
@@ -130,12 +161,20 @@ export default function BarcodeQcCenter({
   // -------------------------------------------------------------
   // TAB 1: QC PASS LABEL DESIGNER & THERMAL PRINTER STATE
   // -------------------------------------------------------------
+  // Mode: "single" (ปรับแต่งฟอร์มเดี่ยว) or "multi_select" (ติ๊กถูกเลือกหลายรายการ)
+  const [selectionMode, setSelectionMode] = useState<"single" | "multi_select">("multi_select");
+  
+  // Paper size: Defaults to 80x50 mm แนวตั้ง (50mm wide x 80mm high portrait roll)
+  const [printerPaperSize, setPrinterPaperSize] = useState<LabelPaperSize>("thermal_80x50_portrait");
+
+  // Single Item State
   const [category, setCategory] = useState<"raw_material" | "packaging" | "product">("raw_material");
   const [productCode, setProductCode] = useState<string>("RMFL-0257");
   const [productName, setProductName] = useState<string>("TS34520 KYLVANILLA");
   const [receivingNo, setReceivingNo] = useState<string>("6162960");
   const [currentPiece, setCurrentPiece] = useState<number>(1);
   const [totalPieces, setTotalPieces] = useState<number>(1);
+  const [selectedSinglePieces, setSelectedSinglePieces] = useState<number[]>([1]);
   const [supplierName, setSupplierName] = useState<string>("IDEVA / De Roma");
   const [appearance, setAppearance] = useState<string>("ของเหลว");
   const [retestDate, setRetestDate] = useState<string>(formatShortThaiDate("2026-10-14"));
@@ -144,12 +183,184 @@ export default function BarcodeQcCenter({
   const [inspector, setInspector] = useState<string>("สุรัสวดี");
   const [approver, setApprover] = useState<string>("ณ");
   const [approvalDate, setApprovalDate] = useState<string>(formatShortThaiDate("2026-10-07"));
-  const [printAllPieces, setPrintAllPieces] = useState<boolean>(false);
-  const [printerPaperSize, setPrinterPaperSize] = useState<"thermal_100x75" | "thermal_80x50" | "thermal_100x150" | "a4_sheet">("thermal_100x75");
   const [customBarcodeText, setCustomBarcodeText] = useState<string>("");
   const [copiedBarcode, setCopiedBarcode] = useState<boolean>(false);
 
-  // Quick preset loader
+  // Synchronize single pieces checkboxes when totalPieces changes
+  useEffect(() => {
+    setSelectedSinglePieces((prev) => {
+      const valid = prev.filter((p) => p <= totalPieces);
+      return valid.length > 0 ? valid : [1];
+    });
+  }, [totalPieces]);
+
+  // -------------------------------------------------------------
+  // MULTI-ITEM CHECKLIST STATE (ติ๊กถูกเลือกพิมพ์ได้มากกว่า 1 รายการ)
+  // -------------------------------------------------------------
+  const [multiSearch, setMultiSearch] = useState<string>("");
+  const [multiFilterCategory, setMultiFilterCategory] = useState<"all" | "lot" | "grn" | "prod" | "fg">("all");
+
+  // Build master batch checklist from system items
+  const [batchItems, setBatchItems] = useState<BatchItemEntry[]>([]);
+
+  // Initialize or re-sync batch items from database records
+  useEffect(() => {
+    const items: BatchItemEntry[] = [];
+
+    // 1. Raw Material Lots
+    rawMaterialLots.forEach((l) => {
+      items.push({
+        id: `lot-${l.id}`,
+        selected: false,
+        copies: 1,
+        category: "raw_material",
+        productCode: l.material_code || `RM-${l.material_id}`,
+        productName: l.material_name || "สารเคมีในคลัง",
+        receivingNo: l.grn_no ? l.grn_no.replace(/^GRN-/, "") : l.supplier_lot_no,
+        supplierName: l.supplier_name || "IDEVA / De Roma",
+        appearance: l.appearance || "ของเหลว",
+        retestDate: formatShortThaiDate(l.retest_date),
+        receiveDate: formatShortThaiDate(l.received_date),
+        expiryDate: formatShortThaiDate(l.expiry_date),
+        inspector: "สุรัสวดี",
+        approver: "ณ",
+        approvalDate: formatShortThaiDate(l.received_date),
+        totalPieces: 1,
+        selectedPieces: [1],
+        sourceType: "lot"
+      });
+    });
+
+    // 2. GRNs
+    grns.forEach((g) => {
+      items.push({
+        id: `grn-${g.id}`,
+        selected: false,
+        copies: 1,
+        category: "raw_material",
+        productCode: g.material_code || "RM-CHEM",
+        productName: g.material_name || "สารเคมีรับเข้า",
+        receivingNo: g.code.replace(/^GRN-/, ""),
+        supplierName: g.supplier_name || "IDEVA / De Roma",
+        appearance: g.appearance || "ของเหลว",
+        retestDate: formatShortThaiDate(g.retest_date || g.expiry_date),
+        receiveDate: formatShortThaiDate(g.receive_date),
+        expiryDate: formatShortThaiDate(g.expiry_date),
+        inspector: "สุรัสวดี",
+        approver: "ณ",
+        approvalDate: formatShortThaiDate(g.receive_date),
+        totalPieces: g.label_pieces || 1,
+        selectedPieces: Array.from({ length: g.label_pieces || 1 }, (_, i) => i + 1),
+        sourceType: "grn"
+      });
+    });
+
+    // 3. Production Orders
+    productionOrders.forEach((po) => {
+      const calcPieces = Math.max(1, Math.ceil((po.quantity || 1) / 25));
+      items.push({
+        id: `prod-${po.id}`,
+        selected: false,
+        copies: 1,
+        category: "product",
+        productCode: po.product_code || `PRD-${po.id}`,
+        productName: po.product_name || "ชิ้นงานสั่งผลิต",
+        receivingNo: po.code,
+        supplierName: po.customer_name || "โรงงาน IDEVA",
+        appearance: "สารละลายผสมสำเร็จ",
+        retestDate: formatShortThaiDate(po.due_date),
+        receiveDate: formatShortThaiDate(po.date),
+        expiryDate: formatShortThaiDate(po.due_date),
+        inspector: "สุรัสวดี",
+        approver: "ณ",
+        approvalDate: formatShortThaiDate(po.date),
+        totalPieces: calcPieces,
+        selectedPieces: Array.from({ length: calcPieces }, (_, i) => i + 1),
+        sourceType: "prod"
+      });
+    });
+
+    // 4. Products (FG)
+    products.forEach((p) => {
+      items.push({
+        id: `fg-${p.id}`,
+        selected: false,
+        copies: 1,
+        category: "product",
+        productCode: p.code,
+        productName: p.name,
+        receivingNo: `LOT-${p.code}`,
+        supplierName: "IDEVA FACTORY OS",
+        appearance: "สินค้าสำเร็จรูป",
+        retestDate: formatShortThaiDate(),
+        receiveDate: formatShortThaiDate(),
+        expiryDate: formatShortThaiDate(new Date(Date.now() + 365*24*60*60*1000).toISOString()),
+        inspector: "สุรัสวดี",
+        approver: "ณ",
+        approvalDate: formatShortThaiDate(),
+        totalPieces: 1,
+        selectedPieces: [1],
+        sourceType: "fg"
+      });
+    });
+
+    // Keep first 2 items selected by default for easy demo
+    if (items.length > 0) items[0].selected = true;
+    if (items.length > 1) items[1].selected = true;
+
+    setBatchItems(items);
+  }, [rawMaterialLots, grns, productionOrders, products]);
+
+  // Toggle single item selection
+  const handleToggleItemSelect = (id: string) => {
+    setBatchItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, selected: !item.selected } : item))
+    );
+  };
+
+  // Change copies count for an item
+  const handleChangeItemCopies = (id: string, copies: number) => {
+    const val = Math.max(1, Math.min(100, copies || 1));
+    setBatchItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, copies: val } : item))
+    );
+  };
+
+  // Select all or deselect all
+  const handleSelectAll = (select: boolean) => {
+    setBatchItems((prev) => prev.map((item) => ({ ...item, selected: select })));
+  };
+
+  // Filtered batch items for checklist display
+  const filteredBatchItems = useMemo(() => {
+    return batchItems.filter((item) => {
+      const matchCat =
+        multiFilterCategory === "all" || item.sourceType === multiFilterCategory;
+      const q = multiSearch.toLowerCase().trim();
+      const matchText =
+        !q ||
+        item.productCode.toLowerCase().includes(q) ||
+        item.productName.toLowerCase().includes(q) ||
+        item.receivingNo.toLowerCase().includes(q) ||
+        item.supplierName.toLowerCase().includes(q);
+      return matchCat && matchText;
+    });
+  }, [batchItems, multiFilterCategory, multiSearch]);
+
+  // Count total selected labels
+  const selectedBatchItems = useMemo(() => {
+    return batchItems.filter((i) => i.selected);
+  }, [batchItems]);
+
+  const totalSelectedLabelsCount = useMemo(() => {
+    return selectedBatchItems.reduce((acc, curr) => {
+      // If item has selected pieces, count them times copies
+      const piecesCount = (curr.selectedPieces && curr.selectedPieces.length > 0) ? curr.selectedPieces.length : 1;
+      return acc + (piecesCount * curr.copies);
+    }, 0);
+  }, [selectedBatchItems]);
+
+  // Quick single preset loader
   const handleSelectPreset = (value: string) => {
     if (!value) return;
     const [type, idStr] = value.split(":");
@@ -167,6 +378,8 @@ export default function BarcodeQcCenter({
         setReceiveDate(formatShortThaiDate(g.receive_date));
         setExpiryDate(formatShortThaiDate(g.expiry_date));
         setRetestDate(formatShortThaiDate(g.retest_date || g.expiry_date));
+        setTotalPieces(g.label_pieces || 1);
+        setSelectedSinglePieces(Array.from({ length: g.label_pieces || 1 }, (_, i) => i + 1));
       }
     } else if (type === "lot") {
       const l = rawMaterialLots.find((x) => x.id === id);
@@ -180,16 +393,20 @@ export default function BarcodeQcCenter({
         setReceiveDate(formatShortThaiDate(l.received_date));
         setExpiryDate(formatShortThaiDate(l.expiry_date));
         setRetestDate(formatShortThaiDate(l.retest_date));
+        setTotalPieces(1);
+        setSelectedSinglePieces([1]);
       }
     } else if (type === "prod") {
       const p = productionOrders.find((x) => x.id === id);
       if (p) {
+        const count = Math.max(1, Math.ceil((p.quantity || 1) / 25));
         setCategory("product");
         setProductCode(p.product_code || `PRD-${p.id}`);
         setProductName(p.product_name || "ชิ้นงานสั่งผลิต");
         setReceivingNo(p.code);
         setSupplierName(p.customer_name || "โรงงาน IDEVA");
-        setTotalPieces(Math.ceil((p.quantity || 1) / 25) || 1);
+        setTotalPieces(count);
+        setSelectedSinglePieces(Array.from({ length: count }, (_, i) => i + 1));
         setCurrentPiece(1);
         setReceiveDate(formatShortThaiDate(p.date));
         setExpiryDate(formatShortThaiDate(p.due_date));
@@ -204,11 +421,11 @@ export default function BarcodeQcCenter({
         setReceivingNo(`LOT-${prod.code}`);
         setSupplierName("IDEVA FACTORY OS");
         setAppearance("สินค้าสำเร็จรูป");
+        setTotalPieces(1);
+        setSelectedSinglePieces([1]);
       }
     }
   };
-
-  const generatedBarcode = customBarcodeText || `LOT-${productCode}-${receivingNo}-P${currentPiece}`;
 
   // -------------------------------------------------------------
   // TAB 2: PHYSICAL SCANNER & STOCK COUNTING STATE
@@ -262,7 +479,6 @@ export default function BarcodeQcCenter({
     const clean = query.trim();
     if (!clean) return;
 
-    // Normalize for lookups (e.g., stripping * or LOT- prefix)
     const upper = clean.toUpperCase();
     const stripped = upper.replace(/^LOT-/, "").replace(/\*+/g, "");
 
@@ -406,7 +622,6 @@ export default function BarcodeQcCenter({
     setStatusMessage({ text: `ไม่พบข้อมูลสำหรับบาร์โค้ด "${clean}" ในฐานข้อมูล Firebase`, type: "error" });
   };
 
-  // Barcode input key press handler (barcode scanners typically emit Enter after scan)
   const handleScannerKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -433,7 +648,6 @@ export default function BarcodeQcCenter({
         });
       }
 
-      // Add to session history
       setScanHistory((prev) => [
         {
           id: String(Date.now()),
@@ -452,7 +666,6 @@ export default function BarcodeQcCenter({
       if (soundEnabled) playScannerBeep("success");
       setStatusMessage({ text: `ปรับปรุงยอดสต็อกสำเร็จ! บันทึกยอดนับจริง ${physicalCount} ${matchedItem.unit} ลง Firebase แล้ว`, type: "success" });
 
-      // Reset input for next scan
       setScannedInput("");
       setMatchedItem(null);
       setTimeout(() => {
@@ -471,8 +684,112 @@ export default function BarcodeQcCenter({
     window.print();
   };
 
-  // Array of pieces for multi-piece print
-  const piecesToPrint = printAllPieces ? Array.from({ length: totalPieces }, (_, i) => i + 1) : [currentPiece];
+  // Determine list of labels to render for printing
+  const labelsToRender = useMemo(() => {
+    if (selectionMode === "multi_select") {
+      const list: {
+        category: "raw_material" | "packaging" | "product";
+        productCode: string;
+        productName: string;
+        receivingNo: string;
+        pieceNum: number;
+        totalPieces: number;
+        supplierName: string;
+        appearance: string;
+        retestDate: string;
+        receiveDate: string;
+        expiryDate: string;
+        inspector: string;
+        approver: string;
+        approvalDate: string;
+        barcodeText: string;
+      }[] = [];
+
+      selectedBatchItems.forEach((item) => {
+        const pieces = item.selectedPieces.length > 0 ? item.selectedPieces : [1];
+        // Repeat for copies
+        for (let copyIdx = 0; copyIdx < (item.copies || 1); copyIdx++) {
+          pieces.forEach((pieceNum) => {
+            list.push({
+              category: item.category,
+              productCode: item.productCode,
+              productName: item.productName,
+              receivingNo: item.receivingNo,
+              pieceNum,
+              totalPieces: item.totalPieces,
+              supplierName: item.supplierName,
+              appearance: item.appearance,
+              retestDate: item.retestDate,
+              receiveDate: item.receiveDate,
+              expiryDate: item.expiryDate,
+              inspector: item.inspector,
+              approver: item.approver,
+              approvalDate: item.approvalDate,
+              barcodeText: `LOT-${item.productCode}-${item.receivingNo}-P${pieceNum}`
+            });
+          });
+        }
+      });
+      return list;
+    } else {
+      // Single Item Mode (selected piece numbers)
+      const list = selectedSinglePieces.map((pieceNum) => ({
+        category,
+        productCode,
+        productName,
+        receivingNo,
+        pieceNum,
+        totalPieces,
+        supplierName,
+        appearance,
+        retestDate,
+        receiveDate,
+        expiryDate,
+        inspector,
+        approver,
+        approvalDate,
+        barcodeText: customBarcodeText || `LOT-${productCode}-${receivingNo}-P${pieceNum}`
+      }));
+      return list.length > 0 ? list : [{
+        category,
+        productCode,
+        productName,
+        receivingNo,
+        pieceNum: currentPiece,
+        totalPieces,
+        supplierName,
+        appearance,
+        retestDate,
+        receiveDate,
+        expiryDate,
+        inspector,
+        approver,
+        approvalDate,
+        barcodeText: customBarcodeText || `LOT-${productCode}-${receivingNo}-P${currentPiece}`
+      }];
+    }
+  }, [
+    selectionMode,
+    selectedBatchItems,
+    selectedSinglePieces,
+    category,
+    productCode,
+    productName,
+    receivingNo,
+    totalPieces,
+    currentPiece,
+    supplierName,
+    appearance,
+    retestDate,
+    receiveDate,
+    expiryDate,
+    inspector,
+    approver,
+    approvalDate,
+    customBarcodeText
+  ]);
+
+  const isPortrait80x50 = printerPaperSize === "thermal_80x50_portrait";
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -484,19 +801,20 @@ export default function BarcodeQcCenter({
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 px-3 py-1 bg-emerald-500/20 border border-emerald-500/40 rounded-full text-emerald-300 text-xs font-bold">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>FM-QC-17 REV:01 STANDARD SYSTEM</span>
+              <span>FM-QC-17 REV:01 STANDARD SYSTEM (ขนาด 80x50 MM แนวตั้ง)</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center gap-3">
               ศูนย์ออกบาร์โค้ด & พิมพ์ป้ายชี้บ่งผ่าน QC
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 max-w-3xl leading-relaxed">
-              ระบบออกรหัสบาร์โค้ดมาตรฐาน Code-128 (ISO/IEC 15417) พิมพ์ป้ายสีเขียวชี้บ่งชิ้นงานผ่าน QC ตามแบบตัวอย่าง 
-              รองรับเครื่องพิมพ์ความร้อน (Thermal Label Printer) และเครื่องยิงสแกนเนอร์สำหรับตรวจนับสต็อกแบบเรียลไทม์
+              รองรับม้วนสติ๊กเกอร์ความร้อน **ขนาด 80x50 MM แนวตั้ง** (สีเขียวตองอ่อน) 
+              และระบบติ๊กถูกเลือกพิมพ์ได้หลายรายการพร้อมกัน พิมพ์กี่ใบก็ได้ตามที่เลือก 
+              พร้อมรหัสบาร์โค้ด Code-128 สำหรับเครื่องยิงสแกนเนอร์นับสต็อก
             </p>
           </div>
 
-          {/* Quick Stats / Status */}
-          <div className="flex items-center gap-3 shrink-0 flex-wrap">
+          {/* Navigation Pills */}
+          <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
             <button
               onClick={() => setActiveTab("label_generator")}
               className={`px-4 py-2.5 rounded-2xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow-md ${
@@ -535,605 +853,807 @@ export default function BarcodeQcCenter({
       {/* TAB 1: ออกบาร์โค้ด & พิมพ์ป้ายผ่าน QC (FM-QC-17 REV:01)                      */}
       {/* ========================================================================= */}
       {activeTab === "label_generator" && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Controls & Configuration Sidebar (Left 5 Cols) */}
-          <div className="lg:col-span-5 space-y-5">
-            {/* 1. Quick Presets Picker Card */}
-            <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                  <Box className="w-4 h-4 text-emerald-600" /> ดึงข้อมูลชิ้นงานอัตโนมัติ
-                </h3>
-                <span className="text-[11px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full">
-                  1-คลิกใส่ฟอร์ม
-                </span>
-              </div>
-              
-              <select
-                onChange={(e) => handleSelectPreset(e.target.value)}
-                defaultValue=""
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:border-emerald-600 focus:bg-white"
+        <div className="space-y-5">
+          {/* Top Paper & Print Mode Configuration Bar */}
+          <div className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            {/* Paper Size Preset Selection (Highlight 80x50 Portrait) */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                <Tag className="w-3.5 h-3.5 text-emerald-600" /> ขนาดป้ายสติ๊กเกอร์:
+              </span>
+
+              {/* 80x50 MM แนวตั้ง (Default & Highlighted) */}
+              <button
+                type="button"
+                onClick={() => setPrinterPaperSize("thermal_80x50_portrait")}
+                className={`px-3 py-1.5 rounded-xl text-xs font-black border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  printerPaperSize === "thermal_80x50_portrait"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-md ring-2 ring-emerald-300"
+                    : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
+                }`}
               >
-                <option value="">-- เลือกรายการชิ้นงาน / ใบรับเข้า / สั่งผลิตในระบบ --</option>
-                {grns.length > 0 && (
-                  <optgroup label="📥 ใบรับเข้าสารเคมี (GRN & Lots)">
-                    {grns.map((g) => (
-                      <option key={`grn:${g.id}`} value={`grn:${g.id}`}>
-                        {g.code} - {g.material_name} (Lot: {g.lot_number || g.supplier_lot_no || "N/A"})
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {rawMaterialLots.length > 0 && (
-                  <optgroup label="🧪 ล็อตวัตถุดิบเคมีภัณฑ์ (Raw Material Lots)">
-                    {rawMaterialLots.map((l) => (
-                      <option key={`lot:${l.id}`} value={`lot:${l.id}`}>
-                        {l.lot_id_code} - {l.material_name} ({l.qc_status})
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {productionOrders.length > 0 && (
-                  <optgroup label="🏭 ใบสั่งผลิตชิ้นงาน (Production Orders)">
-                    {productionOrders.map((po) => (
-                      <option key={`prod:${po.id}`} value={`prod:${po.id}`}>
-                        {po.code} - {po.product_name} ({po.quantity} {po.unit})
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {products.length > 0 && (
-                  <optgroup label="📦 สินค้าสำเร็จรูป (Finished Goods)">
-                    {products.map((p) => (
-                      <option key={`fg:${p.id}`} value={`fg:${p.id}`}>
-                        {p.code} - {p.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+                <span>⭐ 80x50 MM แนวตั้ง (ตามม้วนสีเขียว)</span>
+                {printerPaperSize === "thermal_80x50_portrait" && <Check className="w-3.5 h-3.5" />}
+              </button>
 
-              {/* Printer Hardware Preset Selection */}
-              <div className="pt-2 border-t border-slate-100">
-                <label className="block text-xs font-bold text-slate-700 mb-2">
-                  ขนาดกระดาษ & เครื่องพิมพ์สติ๊กเกอร์ (Thermal Printer Preset):
-                </label>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setPrinterPaperSize("thermal_100x75")}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                      printerPaperSize === "thermal_100x75"
-                        ? "border-emerald-600 bg-emerald-50/80 text-emerald-950 font-bold ring-1 ring-emerald-500 shadow-2xs"
-                        : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
-                    }`}
-                  >
-                    <div className="font-bold flex items-center justify-between">
-                      <span>100 × 75 มม.</span>
-                      {printerPaperSize === "thermal_100x75" && <Check className="w-3.5 h-3.5 text-emerald-600" />}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">มาตรฐานติดถังเคมี/ลัง</div>
-                  </button>
+              <button
+                type="button"
+                onClick={() => setPrinterPaperSize("thermal_80x50_landscape")}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  printerPaperSize === "thermal_80x50_landscape"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                    : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
+                }`}
+              >
+                <span>80x50 MM แนวนอน</span>
+              </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setPrinterPaperSize("thermal_80x50")}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                      printerPaperSize === "thermal_80x50"
-                        ? "border-emerald-600 bg-emerald-50/80 text-emerald-950 font-bold ring-1 ring-emerald-500 shadow-2xs"
-                        : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
-                    }`}
-                  >
-                    <div className="font-bold flex items-center justify-between">
-                      <span>80 × 50 มม.</span>
-                      {printerPaperSize === "thermal_80x50" && <Check className="w-3.5 h-3.5 text-emerald-600" />}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">กะทัดรัด ติดกระปุก/ขวด</div>
-                  </button>
+              <button
+                type="button"
+                onClick={() => setPrinterPaperSize("thermal_100x75")}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  printerPaperSize === "thermal_100x75"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                    : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
+                }`}
+              >
+                <span>100x75 MM</span>
+              </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setPrinterPaperSize("thermal_100x150")}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                      printerPaperSize === "thermal_100x150"
-                        ? "border-emerald-600 bg-emerald-50/80 text-emerald-950 font-bold ring-1 ring-emerald-500 shadow-2xs"
-                        : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
-                    }`}
-                  >
-                    <div className="font-bold flex items-center justify-between">
-                      <span>100 × 150 มม.</span>
-                      {printerPaperSize === "thermal_100x150" && <Check className="w-3.5 h-3.5 text-emerald-600" />}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">ป้ายพาเลท / ขนส่ง</div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setPrinterPaperSize("a4_sheet")}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                      printerPaperSize === "a4_sheet"
-                        ? "border-emerald-600 bg-emerald-50/80 text-emerald-950 font-bold ring-1 ring-emerald-500 shadow-2xs"
-                        : "border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
-                    }`}
-                  >
-                    <div className="font-bold flex items-center justify-between">
-                      <span>แผ่น A4 หลายดวง</span>
-                      {printerPaperSize === "a4_sheet" && <Check className="w-3.5 h-3.5 text-emerald-600" />}
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">พิมพ์บนสติ๊กเกอร์ A4</div>
-                  </button>
-                </div>
-              </div>
+              <button
+                type="button"
+                onClick={() => setPrinterPaperSize("a4_sheet")}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  printerPaperSize === "a4_sheet"
+                    ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                    : "bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100"
+                }`}
+              >
+                <span>แผ่น A4 หลายดวง</span>
+              </button>
             </div>
 
-            {/* 2. Detailed Form Inputs Card */}
-            <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm space-y-4">
-              <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                <Sliders className="w-4 h-4 text-emerald-600" /> ข้อมูลบนป้ายชี้บ่ง (FM-QC-17 REV:01)
-              </h3>
+            {/* Selection Mode Switch: Multi-Select vs Single */}
+            <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-2xl border border-slate-200">
+              <button
+                type="button"
+                onClick={() => setSelectionMode("multi_select")}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  selectionMode === "multi_select"
+                    ? "bg-white text-emerald-800 shadow-sm font-black"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <CheckSquare className="w-3.5 h-3.5 text-emerald-600" />
+                <span>ติ๊กถูกเลือกหลายรายการ ({totalSelectedLabelsCount} ใบ)</span>
+              </button>
 
-              {/* Category Radio */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 mb-1">ประเภทชิ้นงาน:</label>
-                <div className="grid grid-cols-3 gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setCategory("raw_material")}
-                    className={`py-1.5 px-2 rounded-lg font-bold border transition-all cursor-pointer text-center ${
-                      category === "raw_material"
-                        ? "bg-emerald-600 text-white border-emerald-600"
-                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    สารวัตถุดิบ (Ø)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCategory("packaging")}
-                    className={`py-1.5 px-2 rounded-lg font-bold border transition-all cursor-pointer text-center ${
-                      category === "packaging"
-                        ? "bg-emerald-600 text-white border-emerald-600"
-                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    บรรจุภัณฑ์ (Ø)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCategory("product")}
-                    className={`py-1.5 px-2 rounded-lg font-bold border transition-all cursor-pointer text-center ${
-                      category === "product"
-                        ? "bg-emerald-600 text-white border-emerald-600"
-                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                    }`}
-                  >
-                    ชิ้นงานผลิต (Ø)
-                  </button>
-                </div>
-              </div>
-
-              {/* Code & Name */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">รหัสสินค้า (Product Code):</label>
-                  <input
-                    type="text"
-                    value={productCode}
-                    onChange={(e) => setProductCode(e.target.value)}
-                    className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">ชื่อสินค้า (Product Name):</label>
-                  <input
-                    type="text"
-                    value={productName}
-                    onChange={(e) => setProductName(e.target.value)}
-                    className="w-full px-3 py-1.5 font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-              </div>
-
-              {/* Receiving No & Piece Counts */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">เลขที่รับ (Receiving No.):</label>
-                  <input
-                    type="text"
-                    value={receivingNo}
-                    onChange={(e) => setReceivingNo(e.target.value)}
-                    className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">ชิ้นที่ (Piece):</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={currentPiece}
-                    onChange={(e) => setCurrentPiece(parseInt(e.target.value) || 1)}
-                    className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-center"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">จำนวนชิ้นทั้งหมด:</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={totalPieces}
-                    onChange={(e) => setTotalPieces(parseInt(e.target.value) || 1)}
-                    className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-center"
-                  />
-                </div>
-              </div>
-
-              {/* Supplier & Appearance */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">ผู้ผลิต ผู้จำหน่าย:</label>
-                  <input
-                    type="text"
-                    value={supplierName}
-                    onChange={(e) => setSupplierName(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">ลักษณะสินค้า (Appearance):</label>
-                  <input
-                    type="text"
-                    value={appearance}
-                    onChange={(e) => setAppearance(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-              </div>
-
-              {/* Dates */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">วันที่ทดสอบซ้ำ:</label>
-                  <input
-                    type="text"
-                    value={retestDate}
-                    onChange={(e) => setRetestDate(e.target.value)}
-                    className="w-full px-3 py-1.5 font-mono bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">วันที่รับเข้า:</label>
-                  <input
-                    type="text"
-                    value={receiveDate}
-                    onChange={(e) => setReceiveDate(e.target.value)}
-                    className="w-full px-3 py-1.5 font-mono bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">วันหมดอายุ:</label>
-                  <input
-                    type="text"
-                    value={expiryDate}
-                    onChange={(e) => setExpiryDate(e.target.value)}
-                    className="w-full px-3 py-1.5 font-mono bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-              </div>
-
-              {/* Inspector & Approver */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">ผู้ตรวจสอบ (Inspector):</label>
-                  <input
-                    type="text"
-                    value={inspector}
-                    onChange={(e) => setInspector(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-700 mb-1">ผู้อนุมัติ (Approver):</label>
-                  <input
-                    type="text"
-                    value={approver}
-                    onChange={(e) => setApprover(e.target.value)}
-                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
-                  />
-                </div>
-              </div>
-
-              {/* Batch Print All Toggle */}
-              <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-800">
-                  <input
-                    type="checkbox"
-                    checked={printAllPieces}
-                    onChange={(e) => setPrintAllPieces(e.target.checked)}
-                    className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-                  />
-                  <span>พิมพ์ทุกชิ้นงานพร้อมกัน (ชิ้นที่ 1 ถึง {totalPieces})</span>
-                </label>
-
-                <button
-                  type="button"
-                  onClick={handlePrint}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-md cursor-pointer transition-all active:scale-95"
-                >
-                  <Printer className="w-4 h-4" /> สั่งพิมพ์สติ๊กเกอร์ (Print)
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setSelectionMode("single")}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  selectionMode === "single"
+                    ? "bg-white text-emerald-800 shadow-sm font-black"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5 text-blue-600" />
+                <span>ปรับแต่งฟอร์มเดี่ยว</span>
+              </button>
             </div>
           </div>
 
-          {/* Label Visual Preview & Thermal Output (Right 7 Cols) */}
-          <div className="lg:col-span-7 space-y-4">
-            <div className="bg-slate-100 rounded-3xl p-6 border border-slate-300 shadow-inner flex flex-col items-center">
-              <div className="w-full flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    ตัวอย่างป้ายก่อนพิมพ์ (Live Sticker Preview)
-                  </span>
-                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-mono font-bold px-2 py-0.5 rounded-full">
-                    {printerPaperSize === "thermal_100x75" ? "100x75mm Thermal" :
-                     printerPaperSize === "thermal_80x50" ? "80x50mm Thermal" :
-                     printerPaperSize === "thermal_100x150" ? "100x150mm Pallet" : "A4 Multi-Sticker"}
-                  </span>
-                </div>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left Column: Form Controls or Multi-Select Checklist (5 Cols) */}
+            <div className="lg:col-span-5 space-y-5">
+              {/* ================================================================= */}
+              {/* MULTI-SELECT CHECKLIST PANEL (ติ๊กถูกเลือกหลายรายการตามต้องการ)   */}
+              {/* ================================================================= */}
+              {selectionMode === "multi_select" && (
+                <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                        <CheckSquare className="w-4 h-4 text-emerald-600" /> ติ๊กถูกเลือกรายการที่ต้องการพิมพ์
+                      </h3>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        ติ๊กเลือกรายการใดก็ได้ และกำหนดจำนวนใบที่ต้องการพิมพ์ในแต่ละรายการ
+                      </p>
+                    </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(generatedBarcode);
-                      setCopiedBarcode(true);
-                      setTimeout(() => setCopiedBarcode(false), 2000);
-                    }}
-                    className="p-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-600 rounded-lg text-xs font-medium flex items-center gap-1 cursor-pointer"
-                    title="คัดลอกรหัสบาร์โค้ด"
-                  >
-                    {copiedBarcode ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedBarcode ? "คัดลอกแล้ว" : "คัดลอกรหัส"}</span>
-                  </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectAll(true)}
+                        className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-[10px] font-bold border border-emerald-200 cursor-pointer"
+                      >
+                        เลือกทั้งหมด
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectAll(false)}
+                        className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[10px] font-bold border border-slate-300 cursor-pointer"
+                      >
+                        ปลดทั้งหมด
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Search & Filter Strip */}
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={multiSearch}
+                        onChange={(e) => setMultiSearch(e.target.value)}
+                        placeholder="ค้นหาตามรหัส, ชื่อสินค้า, เลขที่รับ..."
+                        className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:border-emerald-500"
+                      />
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+                    </div>
+
+                    <div className="flex items-center gap-1 overflow-x-auto pb-1 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setMultiFilterCategory("all")}
+                        className={`px-2 py-0.5 rounded-lg font-bold shrink-0 cursor-pointer transition-colors ${
+                          multiFilterCategory === "all" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        ทั้งหมด ({batchItems.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMultiFilterCategory("lot")}
+                        className={`px-2 py-0.5 rounded-lg font-bold shrink-0 cursor-pointer transition-colors ${
+                          multiFilterCategory === "lot" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        สารเคมี Lots ({batchItems.filter((i) => i.sourceType === "lot").length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMultiFilterCategory("grn")}
+                        className={`px-2 py-0.5 rounded-lg font-bold shrink-0 cursor-pointer transition-colors ${
+                          multiFilterCategory === "grn" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        รับเข้า GRN ({batchItems.filter((i) => i.sourceType === "grn").length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMultiFilterCategory("prod")}
+                        className={`px-2 py-0.5 rounded-lg font-bold shrink-0 cursor-pointer transition-colors ${
+                          multiFilterCategory === "prod" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        สั่งผลิต ({batchItems.filter((i) => i.sourceType === "prod").length})
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Checklist Table of Items */}
+                  <div className="max-h-[460px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                    {filteredBatchItems.length === 0 ? (
+                      <div className="p-8 text-center text-xs text-slate-400">
+                        ไม่พบรายการที่ตรงกับคำค้นหา
+                      </div>
+                    ) : (
+                      filteredBatchItems.map((item) => (
+                        <div
+                          key={item.id}
+                          className={`p-3 rounded-2xl border transition-all text-xs ${
+                            item.selected
+                              ? "bg-emerald-50/70 border-emerald-500 shadow-2xs"
+                              : "bg-white border-slate-200 hover:bg-slate-50"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <label className="flex items-start gap-2.5 flex-1 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={item.selected}
+                                onChange={() => handleToggleItemSelect(item.id)}
+                                className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                              />
+                              <div className="space-y-0.5 flex-1">
+                                <div className="font-bold text-slate-900 line-clamp-1">
+                                  {item.productName}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono">
+                                  <span className="font-bold text-slate-700">{item.productCode}</span>
+                                  <span>•</span>
+                                  <span>เลขที่รับ: {item.receivingNo}</span>
+                                </div>
+                                <div className="text-[10px] text-slate-400">
+                                  ผู้จำหน่าย: {item.supplierName} | หมดอายุ: {item.expiryDate}
+                                </div>
+                              </div>
+                            </label>
+
+                            {/* Copies Counter */}
+                            <div className="shrink-0 flex flex-col items-end gap-1">
+                              <span className="text-[10px] font-bold text-slate-500">จำนวนใบ:</span>
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="100"
+                                  value={item.copies}
+                                  onChange={(e) => handleChangeItemCopies(item.id, parseInt(e.target.value) || 1)}
+                                  className="w-12 px-1.5 py-1 text-center font-mono font-bold bg-white border border-slate-300 rounded-lg text-xs"
+                                  title="จำนวนใบที่ต้องการพิมพ์"
+                                />
+                                <span className="text-[10px] text-slate-500">ใบ</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Summary Bar & Direct Print Button */}
+                  <div className="p-4 bg-emerald-950 text-white rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-md">
+                    <div>
+                      <div className="text-xs font-bold text-emerald-300">
+                        เลือกแล้ว {selectedBatchItems.length} รายการ (พิมพ์แยกแผ่นละ 1 ใบ)
+                      </div>
+                      <div className="text-sm font-black text-white">
+                        รวมทั้งหมด {totalSelectedLabelsCount} ใบ (ขนาดใบละ 80x50 MM แนวตั้ง)
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={totalSelectedLabelsCount === 0}
+                      onClick={handlePrint}
+                      className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-slate-950 font-black rounded-xl text-xs flex items-center gap-1.5 shadow-md cursor-pointer transition-all active:scale-95"
+                    >
+                      <Printer className="w-4 h-4" /> 🖨️ สั่งพิมพ์ใบละ 80x50 MM แนวตั้ง ({totalSelectedLabelsCount} ใบ)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ================================================================= */}
+              {/* SINGLE ITEM DESIGNER (ปรับแต่งฟอร์มเดี่ยว)                          */}
+              {/* ================================================================= */}
+              {selectionMode === "single" && (
+                <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-emerald-600" /> ปรับแต่งข้อมูลป้ายชี้บ่งเดี่ยว
+                    </h3>
+                  </div>
+
+                  {/* Quick Preset Picker */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">ดึงข้อมูลชิ้นงานอัตโนมัติ:</label>
+                    <select
+                      onChange={(e) => handleSelectPreset(e.target.value)}
+                      defaultValue=""
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:border-emerald-600 focus:bg-white"
+                    >
+                      <option value="">-- เลือกรายการชิ้นงานในระบบ --</option>
+                      {rawMaterialLots.length > 0 && (
+                        <optgroup label="🧪 ล็อตวัตถุดิบเคมีภัณฑ์ (Lots)">
+                          {rawMaterialLots.map((l) => (
+                            <option key={`lot:${l.id}`} value={`lot:${l.id}`}>
+                              {l.lot_id_code} - {l.material_name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {grns.length > 0 && (
+                        <optgroup label="📥 ใบรับเข้าสารเคมี (GRN)">
+                          {grns.map((g) => (
+                            <option key={`grn:${g.id}`} value={`grn:${g.id}`}>
+                              {g.code} - {g.material_name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {productionOrders.length > 0 && (
+                        <optgroup label="🏭 ใบสั่งผลิตชิ้นงาน (Production Orders)">
+                          {productionOrders.map((po) => (
+                            <option key={`prod:${po.id}`} value={`prod:${po.id}`}>
+                              {po.code} - {po.product_name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Category Radio */}
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 mb-1">ประเภทชิ้นงาน:</label>
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setCategory("raw_material")}
+                        className={`py-1.5 px-2 rounded-lg font-bold border transition-all cursor-pointer text-center ${
+                          category === "raw_material"
+                            ? "bg-emerald-600 text-white border-emerald-600"
+                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        สารวัตถุดิบ (Ø)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCategory("packaging")}
+                        className={`py-1.5 px-2 rounded-lg font-bold border transition-all cursor-pointer text-center ${
+                          category === "packaging"
+                            ? "bg-emerald-600 text-white border-emerald-600"
+                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        บรรจุภัณฑ์ (Ø)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCategory("product")}
+                        className={`py-1.5 px-2 rounded-lg font-bold border transition-all cursor-pointer text-center ${
+                          category === "product"
+                            ? "bg-emerald-600 text-white border-emerald-600"
+                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        ชิ้นงานผลิต (Ø)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Code & Name */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">รหัสสินค้า (Product Code):</label>
+                      <input
+                        type="text"
+                        value={productCode}
+                        onChange={(e) => setProductCode(e.target.value)}
+                        className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">ชื่อสินค้า (Product Name):</label>
+                      <input
+                        type="text"
+                        value={productName}
+                        onChange={(e) => setProductName(e.target.value)}
+                        className="w-full px-3 py-1.5 font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Receiving No & Piece Counts */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">เลขที่รับ (Receiving No.):</label>
+                      <input
+                        type="text"
+                        value={receivingNo}
+                        onChange={(e) => setReceivingNo(e.target.value)}
+                        className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">จำนวนชิ้นงานทั้งหมด (Total Pieces):</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={totalPieces}
+                        onChange={(e) => setTotalPieces(parseInt(e.target.value) || 1)}
+                        className="w-full px-3 py-1.5 font-mono font-bold bg-slate-50 border border-slate-300 rounded-lg text-slate-800 text-center"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Individual Piece Checkboxes (ติ๊กเลือกชิ้นที่ต้องการพิมพ์) */}
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700">
+                        ติ๊กเลือกชิ้นงานที่ต้องการพิมพ์ ({selectedSinglePieces.length} / {totalPieces} ชิ้น):
+                      </span>
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedSinglePieces(Array.from({ length: totalPieces }, (_, i) => i + 1))}
+                          className="text-emerald-700 hover:underline font-bold cursor-pointer"
+                        >
+                          เลือกทุกชิ้น
+                        </button>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedSinglePieces([1])}
+                          className="text-slate-500 hover:underline cursor-pointer"
+                        >
+                          ชิ้นที่ 1
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {Array.from({ length: totalPieces }, (_, i) => i + 1).map((p) => {
+                        const isChecked = selectedSinglePieces.includes(p);
+                        return (
+                          <label
+                            key={p}
+                            className={`px-2 py-1 rounded-lg text-xs font-mono font-bold border flex items-center gap-1.5 cursor-pointer transition-all ${
+                              isChecked
+                                ? "bg-emerald-600 text-white border-emerald-600 shadow-2xs"
+                                : "bg-white text-slate-700 border-slate-300 hover:bg-slate-100"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setSelectedSinglePieces(selectedSinglePieces.filter((x) => x !== p));
+                                } else {
+                                  setSelectedSinglePieces([...selectedSinglePieces, p].sort((a, b) => a - b));
+                                }
+                              }}
+                              className="sr-only"
+                            />
+                            <span>ชิ้นที่ {p}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Supplier & Appearance */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">ผู้ผลิต ผู้จำหน่าย:</label>
+                      <input
+                        type="text"
+                        value={supplierName}
+                        onChange={(e) => setSupplierName(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">ลักษณะสินค้า (Appearance):</label>
+                      <input
+                        type="text"
+                        value={appearance}
+                        onChange={(e) => setAppearance(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Dates */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">วันที่ทดสอบซ้ำ:</label>
+                      <input
+                        type="text"
+                        value={retestDate}
+                        onChange={(e) => setRetestDate(e.target.value)}
+                        className="w-full px-3 py-1.5 font-mono bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">วันที่รับเข้า:</label>
+                      <input
+                        type="text"
+                        value={receiveDate}
+                        onChange={(e) => setReceiveDate(e.target.value)}
+                        className="w-full px-3 py-1.5 font-mono bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">วันหมดอายุ:</label>
+                      <input
+                        type="text"
+                        value={expiryDate}
+                        onChange={(e) => setExpiryDate(e.target.value)}
+                        className="w-full px-3 py-1.5 font-mono bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Inspector & Approver */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">ผู้ตรวจสอบ (Inspector):</label>
+                      <input
+                        type="text"
+                        value={inspector}
+                        onChange={(e) => setInspector(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">ผู้อนุมัติ (Approver):</label>
+                      <input
+                        type="text"
+                        value={approver}
+                        onChange={(e) => setApprover(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-slate-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={handlePrint}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-md cursor-pointer transition-all active:scale-95"
+                    >
+                      <Printer className="w-4 h-4" /> สั่งพิมพ์ {labelsToRender.length} ใบ (80x50 แนวตั้ง)
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Right Column: Live Printable Preview (7 Cols) */}
+            <div className="lg:col-span-7 space-y-4">
+              <div className="bg-slate-100 rounded-3xl p-5 border border-slate-300 shadow-inner flex flex-col items-center">
+                <div className="w-full flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-emerald-600" />
+                      ตัวอย่างป้ายที่จะพิมพ์ ({labelsToRender.length} ใบ)
+                    </span>
+                    <span className="text-[10px] bg-emerald-100 text-emerald-900 font-bold px-2 py-0.5 rounded-full">
+                      {isPortrait80x50 ? "80x50 MM แนวตั้ง (50x80mm Roll)" :
+                       printerPaperSize === "thermal_80x50_landscape" ? "80x50 MM แนวนอน" :
+                       printerPaperSize === "thermal_100x75" ? "100x75 MM" : "A4 Multi-Sticker"}
+                    </span>
+                  </div>
 
                   <button
                     type="button"
                     onClick={handlePrint}
-                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 transition-all"
                   >
-                    <Printer className="w-3.5 h-3.5" /> พิมพ์ทันที
+                    <Printer className="w-3.5 h-3.5" /> 🖨️ สั่งพิมพ์ใบละ 80x50 MM แนวตั้ง ({labelsToRender.length} ใบ)
                   </button>
                 </div>
-              </div>
 
-              {/* Printable container matching S__95477832.jpg */}
-              <div className={`space-y-6 w-full flex flex-col items-center ${
-                printerPaperSize === "a4_sheet" ? "max-w-2xl" : "max-w-md"
-              }`}>
-                {piecesToPrint.map((pieceNum) => {
-                  const itemBarcode = `LOT-${productCode}-${receivingNo}-P${pieceNum}`;
-                  const encoded = encodeCode128B(itemBarcode, 10);
+                {/* Printable container displaying labels in 80x50 portrait layout at FULL size */}
+                <div className="space-y-6 w-full flex flex-col items-center max-h-[780px] overflow-y-auto pr-1">
+                  {labelsToRender.map((label, idx) => {
+                    const encoded = encodeCode128B(label.barcodeText, 10);
 
-                  return (
-                    <div
-                      key={pieceNum}
-                      className="printable-qc-label-item rounded-xl border-3 border-emerald-950 p-5 shadow-2xl font-sans relative overflow-hidden select-none w-full"
-                      style={{
-                        backgroundColor: "#52d265", // Exact spring lime green from S__95477832.jpg
-                        color: "#052e16",
-                        maxWidth: printerPaperSize === "thermal_80x50" ? "360px" : "480px"
-                      }}
-                    >
-                      {/* Header Title: ป้ายชี้บ่ง */}
-                      <div className="text-center mb-1">
-                        <h2 className="text-2xl sm:text-3xl font-extrabold tracking-wide text-emerald-950 inline-block px-4">
-                          ป้ายชี้บ่ง
-                        </h2>
-                      </div>
-
-                      {/* Radio Selector Row: Ø สารวัตถุดิบ   O บรรจุภัณฑ์ */}
-                      <div className="flex items-center justify-center gap-6 sm:gap-8 text-xs sm:text-sm font-extrabold my-1.5 text-emerald-950">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-lg sm:text-xl font-black font-mono">
-                            {category === "raw_material" ? "Ø" : "O"}
+                    return (
+                      <div key={idx} className="w-full max-w-[400px] sm:max-w-[440px] flex flex-col items-center">
+                        {/* Sheet Number Badge */}
+                        <div className="w-full flex items-center justify-between text-[11px] font-bold text-slate-600 bg-white/80 px-3 py-1 rounded-t-xl border-t border-x border-slate-300">
+                          <span className="flex items-center gap-1 text-emerald-800">
+                            <Tag className="w-3 h-3 text-emerald-600" />
+                            แผ่นที่ {idx + 1} / {labelsToRender.length} (เต็มขนาด 80x50 MM แนวตั้ง)
                           </span>
-                          <span className={category === "raw_material" ? "underline underline-offset-4 decoration-2" : ""}>
-                            สารวัตถุดิบ
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-lg sm:text-xl font-black font-mono">
-                            {category === "packaging" ? "Ø" : "O"}
-                          </span>
-                          <span className={category === "packaging" ? "underline underline-offset-4 decoration-2" : ""}>
-                            บรรจุภัณฑ์
-                          </span>
-                        </div>
-                        {category === "product" && (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-lg sm:text-xl font-black font-mono">Ø</span>
-                            <span className="underline underline-offset-4 decoration-2">
-                              ชิ้นงาน/สำเร็จรูป
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Form Content Lines matching S__95477832.jpg */}
-                      <div className="space-y-1 sm:space-y-1.5 text-xs sm:text-sm font-bold border-t-2 border-b-2 border-emerald-950 py-2">
-                        {/* 1. รหัสสินค้า (Product Code) */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <span className="shrink-0 text-emerald-950 font-black">
-                            รหัสสินค้า(Product Code):
-                          </span>
-                          <span className="font-mono font-black text-sm sm:text-base text-emerald-950 tracking-wider">
-                            {productCode}
-                          </span>
+                          <span className="font-mono text-[10px] text-slate-500">{label.barcodeText}</span>
                         </div>
 
-                        {/* 2. ชื่อสินค้า (Product Name) */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <span className="shrink-0 text-emerald-950 font-black">
-                            ชื่อสินค้า(Product Name):
-                          </span>
-                          <span className="font-black text-xs sm:text-sm text-emerald-950 truncate max-w-[240px] sm:max-w-[280px]">
-                            {productName}
-                          </span>
-                        </div>
-
-                        {/* 3. เลขที่รับ (Receiving No.) & ชิ้นที่ */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              เลขที่รับ(Receiving No.):
-                            </span>
-                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                              {receivingNo}
-                            </span>
-                          </div>
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              ชิ้นที่:
-                            </span>
-                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                              {pieceNum} / {totalPieces}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* 4. ผู้ผลิต ผู้จำหน่าย */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <span className="shrink-0 text-emerald-950 font-black">
-                            ผู้ผลิต ผู้จำหน่าย :
-                          </span>
-                          <span className="font-black text-xs sm:text-sm text-emerald-950 truncate max-w-[240px] sm:max-w-[280px]">
-                            {supplierName}
-                          </span>
-                        </div>
-
-                        {/* 5. ลักษณะสินค้า (Appearance) */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <span className="shrink-0 text-emerald-950 font-black">
-                            ลักษณะสินค้า (Appearance):
-                          </span>
-                          <span className="font-black text-xs sm:text-sm text-emerald-950">
-                            {appearance}
-                          </span>
-                        </div>
-
-                        {/* 6. วันที่ทดสอบซ้ำ */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <span className="shrink-0 text-emerald-950 font-black">
-                            วันที่ทดสอบซ้ำ :
-                          </span>
-                          <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                            {retestDate}
-                          </span>
-                        </div>
-
-                        {/* 7. วันที่รับเข้า & วันหมดอายุ */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              วันที่รับเข้า:
-                            </span>
-                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                              {receiveDate}
-                            </span>
-                          </div>
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              วันหมดอายุ:
-                            </span>
-                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                              {expiryDate}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* 8. ผู้ตรวจสอบ & วันที่ */}
-                        <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-1">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              ผู้ตรวจสอบ:
-                            </span>
-                            <span className="font-black text-xs sm:text-sm text-emerald-950">
-                              {inspector}
-                            </span>
-                          </div>
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              วันที่:
-                            </span>
-                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                              {receiveDate}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* 9. ผู้อนุมัติ & วันที่ */}
-                        <div className="flex items-baseline justify-between pb-0.5">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              ผู้อนุมัติ:
-                            </span>
-                            <span className="font-black text-xs sm:text-sm text-emerald-950">
-                              {approver}
-                            </span>
-                          </div>
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="shrink-0 text-emerald-950 font-black">
-                              วันที่:
-                            </span>
-                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950">
-                              {approvalDate}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* 100% Optical Barcode Section (ISO/IEC 15417 Code-128 with Quiet Zones) */}
-                      <div className="my-2 bg-white p-2 rounded-lg border-2 border-emerald-950 flex flex-col items-center justify-center">
-                        <svg
-                          className="w-full h-9 sm:h-10"
-                          viewBox={`0 0 ${encoded.totalWidth} 40`}
-                          preserveAspectRatio="none"
-                          style={{ display: "block" }}
+                        <div
+                          className={`printable-qc-label-item rounded-b-xl border-3 border-emerald-950 p-4 shadow-xl font-sans relative overflow-hidden select-none transition-all w-full text-xs sm:text-sm`}
+                          style={{
+                            backgroundColor: "#52d265", // Exact spring lime green from S__96083992_4e11784c.jpg
+                            color: "#052e16",
+                            boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.25)"
+                          }}
                         >
-                          <rect x="0" y="0" width={encoded.totalWidth} height="40" fill="#ffffff" />
-                          {encoded.bars.map((b, i) => {
-                            if (!b.isBlack) return null;
-                            return (
-                              <rect
-                                key={i}
-                                x={b.x}
-                                y="0"
-                                width={b.width}
-                                height="40"
-                                fill="#000000"
-                              />
-                            );
-                          })}
-                        </svg>
-                        <div className="font-mono text-[10px] sm:text-xs font-black text-emerald-950 tracking-wider mt-0.5">
-                          *{itemBarcode}*
+                        {/* Header: ป้ายชี้บ่ง */}
+                        <div className="text-center mb-0.5">
+                          <h2 className="text-xl sm:text-2xl font-black tracking-wide text-emerald-950 inline-block px-3">
+                            ป้ายชี้บ่ง
+                          </h2>
                         </div>
-                      </div>
 
-                      {/* Footer Approved Standard Code */}
-                      <div className="flex items-center justify-between text-[11px] sm:text-xs font-black pt-1 text-emerald-950">
-                        <span className="uppercase tracking-wider">อนุมัติ (Approved)</span>
-                        <span className="font-mono tracking-widest">FM-QC-17 REV:01</span>
+                        {/* Category Radio: Ø สารวัตถุดิบ   O บรรจุภัณฑ์ */}
+                        <div className="flex items-center justify-center gap-4 sm:gap-6 text-xs font-black my-1 text-emerald-950">
+                          <div className="flex items-center gap-1">
+                            <span className="text-base font-black font-mono">
+                              {label.category === "raw_material" ? "Ø" : "O"}
+                            </span>
+                            <span className={label.category === "raw_material" ? "underline underline-offset-2 decoration-2" : ""}>
+                              สารวัตถุดิบ
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-base font-black font-mono">
+                              {label.category === "packaging" ? "Ø" : "O"}
+                            </span>
+                            <span className={label.category === "packaging" ? "underline underline-offset-2 decoration-2" : ""}>
+                              บรรจุภัณฑ์
+                            </span>
+                          </div>
+                          {label.category === "product" && (
+                            <div className="flex items-center gap-1">
+                              <span className="text-base font-black font-mono">Ø</span>
+                              <span className="underline underline-offset-2 decoration-2">
+                                ชิ้นงาน
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Form Content Grid matching S__95477832.jpg in 80x50 Portrait */}
+                        <div className="space-y-1 text-xs font-bold border-t-2 border-b-2 border-emerald-950 py-1.5">
+                          {/* 1. รหัสสินค้า (Product Code) */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <span className="shrink-0 text-emerald-950 font-black text-[11px]">
+                              รหัสสินค้า(Product Code):
+                            </span>
+                            <span className="font-mono font-black text-xs sm:text-sm text-emerald-950 tracking-wide truncate max-w-[170px] text-right">
+                              {label.productCode}
+                            </span>
+                          </div>
+
+                          {/* 2. ชื่อสินค้า (Product Name) */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <span className="shrink-0 text-emerald-950 font-black text-[11px]">
+                              ชื่อสินค้า(Product Name):
+                            </span>
+                            <span className="font-black text-[11px] sm:text-xs text-emerald-950 truncate max-w-[170px] text-right">
+                              {label.productName}
+                            </span>
+                          </div>
+
+                          {/* 3. เลขที่รับ (Receiving No.) & ชิ้นที่ */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                เลขที่รับ:
+                              </span>
+                              <span className="font-mono font-black text-[11px] text-emerald-950">
+                                {label.receivingNo}
+                              </span>
+                            </div>
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                ชิ้นที่:
+                              </span>
+                              <span className="font-mono font-black text-[11px] text-emerald-950">
+                                {label.pieceNum} / {label.totalPieces}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* 4. ผู้ผลิต ผู้จำหน่าย */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                              ผู้ผลิต ผู้จำหน่าย:
+                            </span>
+                            <span className="font-black text-[10px] text-emerald-950 truncate max-w-[160px] text-right">
+                              {label.supplierName}
+                            </span>
+                          </div>
+
+                          {/* 5. ลักษณะสินค้า (Appearance) */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                              ลักษณะสินค้า (Appearance):
+                            </span>
+                            <span className="font-black text-[10px] text-emerald-950">
+                              {label.appearance}
+                            </span>
+                          </div>
+
+                          {/* 6. วันที่ทดสอบซ้ำ */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                              วันที่ทดสอบซ้ำ :
+                            </span>
+                            <span className="font-mono font-black text-[10px] text-emerald-950">
+                              {label.retestDate}
+                            </span>
+                          </div>
+
+                          {/* 7. วันที่รับเข้า & วันหมดอายุ */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                วันรับเข้า:
+                              </span>
+                              <span className="font-mono font-black text-[10px] text-emerald-950">
+                                {label.receiveDate}
+                              </span>
+                            </div>
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                หมดอายุ:
+                              </span>
+                              <span className="font-mono font-black text-[10px] text-emerald-950">
+                                {label.expiryDate}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* 8. ผู้ตรวจสอบ & วันที่ */}
+                          <div className="flex items-baseline justify-between border-b border-emerald-900/60 pb-0.5">
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                ผู้ตรวจสอบ:
+                              </span>
+                              <span className="font-black text-[10px] text-emerald-950">
+                                {label.inspector}
+                              </span>
+                            </div>
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                วันที่:
+                              </span>
+                              <span className="font-mono font-black text-[10px] text-emerald-950">
+                                {label.receiveDate}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* 9. ผู้อนุมัติ & วันที่ */}
+                          <div className="flex items-baseline justify-between pb-0.5">
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                ผู้อนุมัติ:
+                              </span>
+                              <span className="font-black text-[10px] text-emerald-950">
+                                {label.approver}
+                              </span>
+                            </div>
+                            <div className="flex items-baseline gap-1">
+                              <span className="shrink-0 text-emerald-950 font-black text-[10px]">
+                                วันที่:
+                              </span>
+                              <span className="font-mono font-black text-[10px] text-emerald-950">
+                                {label.approvalDate}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Barcode Section for Thermal Printing */}
+                        <div className="my-1.5 bg-white p-1.5 rounded-lg border-2 border-emerald-950 flex flex-col items-center justify-center">
+                          <svg
+                            className="w-full h-7 sm:h-8"
+                            viewBox={`0 0 ${encoded.totalWidth} 36`}
+                            preserveAspectRatio="none"
+                            style={{ display: "block" }}
+                          >
+                            <rect x="0" y="0" width={encoded.totalWidth} height="36" fill="#ffffff" />
+                            {encoded.bars.map((b, i) => {
+                              if (!b.isBlack) return null;
+                              return (
+                                <rect
+                                  key={i}
+                                  x={b.x}
+                                  y="0"
+                                  width={b.width}
+                                  height="36"
+                                  fill="#000000"
+                                />
+                              );
+                            })}
+                          </svg>
+                          <div className="font-mono text-[9px] sm:text-[10px] font-black text-emerald-950 tracking-wider mt-0.5">
+                            *{label.barcodeText}*
+                          </div>
+                        </div>
+
+                        {/* Footer: Approved FM-QC-17 REV:01 */}
+                        <div className="flex items-center justify-between text-[10px] sm:text-[11px] font-black pt-0.5 text-emerald-950">
+                          <span className="uppercase tracking-wider">อนุมัติ (Approved)</span>
+                          <span className="font-mono tracking-widest">FM-QC-17 REV:01</span>
+                        </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
 
-              {/* Instructions Callout */}
-              <div className="mt-5 text-center text-xs text-slate-500 max-w-md">
-                💡 <strong>คำแนะนำการพิมพ์:</strong> ตั้งค่าขนาดกระดาษในคำสั่งพิมพ์ (Print Dialog) 
-                ให้ตรงกับขนาดสติ๊กเกอร์ม้วนความร้อน (100x75 มม. หรือ 80x50 มม.) 
-                พร้อมเปิดตัวเลือก <em>"Background graphics (พิมพ์สีกราฟิกพื้นหลัง)"</em>
+                <div className="mt-4 text-center text-xs text-slate-500">
+                  💡 กำหนดขนาดกระดาษในหน้าต่างพิมพ์เป็น **50mm × 80mm** (หรือเลือกเครื่องพิมพ์ม้วนสติ๊กเกอร์ความร้อน)
+                </div>
               </div>
             </div>
           </div>
@@ -1145,9 +1665,7 @@ export default function BarcodeQcCenter({
       {/* ========================================================================= */}
       {activeTab === "scanner_counter" && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Active Scanner Control Center (Left 7 Cols) */}
           <div className="lg:col-span-7 space-y-5">
-            {/* Main Scanner Input Box */}
             <div className="bg-white rounded-3xl p-6 border-2 border-emerald-500/30 shadow-lg space-y-5 relative overflow-hidden">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -1164,7 +1682,6 @@ export default function BarcodeQcCenter({
                   </div>
                 </div>
 
-                {/* Sound Toggle Button */}
                 <button
                   type="button"
                   onClick={() => setSoundEnabled(!soundEnabled)}
@@ -1180,7 +1697,6 @@ export default function BarcodeQcCenter({
                 </button>
               </div>
 
-              {/* Barcode Gun Input Field */}
               <div className="relative">
                 <input
                   ref={scannerInputRef}
@@ -1203,7 +1719,6 @@ export default function BarcodeQcCenter({
                 </button>
               </div>
 
-              {/* Status Message Banner */}
               {statusMessage && (
                 <div className={`p-3.5 rounded-2xl text-xs font-bold flex items-center gap-2.5 animate-in slide-in-from-top-1 ${
                   statusMessage.type === "success" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" :
@@ -1217,7 +1732,6 @@ export default function BarcodeQcCenter({
                 </div>
               )}
 
-              {/* Matched Item Details Panel */}
               {matchedItem ? (
                 <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200 space-y-4">
                   <div className="flex items-start justify-between gap-4">
@@ -1251,7 +1765,6 @@ export default function BarcodeQcCenter({
                     </div>
                   </div>
 
-                  {/* Physical Count Adjustment Box */}
                   <div className="p-4 bg-white rounded-xl border border-slate-300 space-y-3">
                     <div className="flex items-center justify-between">
                       <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
@@ -1269,7 +1782,6 @@ export default function BarcodeQcCenter({
                       </div>
                     </div>
 
-                    {/* Numeric Input & Quick Step Buttons */}
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -1311,7 +1823,6 @@ export default function BarcodeQcCenter({
                       </button>
                     </div>
 
-                    {/* Additional Notes & Inspector */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
                       <div>
                         <label className="block text-[10px] font-bold text-slate-500 mb-0.5">สาเหตุการปรับยอด / บันทึก:</label>
@@ -1333,7 +1844,6 @@ export default function BarcodeQcCenter({
                       </div>
                     </div>
 
-                    {/* Save Stock Adjustment Button */}
                     <div className="pt-2 flex items-center justify-end gap-2">
                       <button
                         type="button"
@@ -1375,9 +1885,7 @@ export default function BarcodeQcCenter({
             </div>
           </div>
 
-          {/* Session History & Fast Selection (Right 5 Cols) */}
           <div className="lg:col-span-5 space-y-5">
-            {/* Session Scanned History */}
             <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
@@ -1427,7 +1935,6 @@ export default function BarcodeQcCenter({
               )}
             </div>
 
-            {/* Quick Test Barcode Clicker */}
             <div className="bg-white rounded-3xl p-5 border border-slate-200 shadow-sm space-y-3">
               <h3 className="text-xs font-bold text-slate-800 flex items-center gap-2">
                 <Sparkles className="w-3.5 h-3.5 text-amber-500" /> คลิกทดสอบบาร์โค้ดจำลอง (Fast Test Scan):
@@ -1487,7 +1994,6 @@ export default function BarcodeQcCenter({
             </button>
           </div>
 
-          {/* Master Table */}
           <div className="overflow-x-auto rounded-2xl border border-slate-200">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -1536,6 +2042,7 @@ export default function BarcodeQcCenter({
                       <button
                         type="button"
                         onClick={() => {
+                          setSelectionMode("single");
                           setCategory("raw_material");
                           setProductCode(l.material_code || `RM-${l.material_id}`);
                           setProductName(l.material_name || "สารเคมี");
@@ -1585,6 +2092,7 @@ export default function BarcodeQcCenter({
                       <button
                         type="button"
                         onClick={() => {
+                          setSelectionMode("single");
                           setCategory("product");
                           setProductCode(po.product_code || `PRD-${po.id}`);
                           setProductName(po.product_name || "ชิ้นงานสั่งผลิต");
@@ -1608,20 +2116,35 @@ export default function BarcodeQcCenter({
       )}
 
       {/* ========================================================================= */}
-      {/* THERMAL PRINT MEDIA CSS (Hardware exact sizing for 100x75, 80x50, A4)      */}
+      {/* THERMAL PRINT MEDIA CSS (80x50 MM แนวตั้ง 50mm W x 80mm H EXACT ROLL FIT)  */}
       {/* ========================================================================= */}
       <style>{`
         @media print {
           @page {
             ${
-              printerPaperSize === "thermal_100x75"
-                ? "size: 100mm 75mm; margin: 0mm;"
-                : printerPaperSize === "thermal_80x50"
+              isPortrait80x50
+                ? "size: 50mm 80mm; margin: 0mm;"
+                : printerPaperSize === "thermal_80x50_landscape"
                 ? "size: 80mm 50mm; margin: 0mm;"
+                : printerPaperSize === "thermal_100x75"
+                ? "size: 100mm 75mm; margin: 0mm;"
                 : printerPaperSize === "thermal_100x150"
                 ? "size: 100mm 150mm; margin: 0mm;"
-                : "size: A4 portrait; margin: 10mm;"
+                : "size: A4 portrait; margin: 8mm;"
             }
+          }
+
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+            ${isPortrait80x50 ? "width: 50mm !important; height: auto !important;" : ""}
+            overflow: visible !important;
+          }
+
+          div, section, main, article {
+            overflow: visible !important;
+            max-height: none !important;
           }
 
           body * {
@@ -1635,15 +2158,26 @@ export default function BarcodeQcCenter({
 
           .printable-qc-label-item {
             position: relative !important;
+            display: block !important;
+            box-sizing: border-box !important;
             margin: 0 auto !important;
             page-break-after: always !important;
             break-after: page !important;
-            width: 100% !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            ${
+              isPortrait80x50
+                ? "width: 50mm !important; min-width: 50mm !important; max-width: 50mm !important; height: 80mm !important; min-height: 80mm !important; max-height: 80mm !important; padding: 2mm !important;"
+                : printerPaperSize === "thermal_80x50_landscape"
+                ? "width: 80mm !important; min-width: 80mm !important; max-width: 80mm !important; height: 50mm !important; min-height: 50mm !important; max-height: 50mm !important; padding: 2mm !important;"
+                : "width: 100% !important; max-width: 500px !important;"
+            }
             background-color: #52d265 !important;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
-            border: 3px solid #052e16 !important;
+            border: 2px solid #052e16 !important;
             box-shadow: none !important;
+            overflow: hidden !important;
           }
         }
       `}</style>
