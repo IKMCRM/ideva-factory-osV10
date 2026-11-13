@@ -52,9 +52,12 @@ import {
   InventoryPack, 
   Project, 
   Supplier, 
+  MaterialSupplier,
+  PurchasePriceHistory,
   SemiFinishedGood, 
   RequisitionSlip 
 } from "./types";
+import { recordMaterialSupplierPurchase } from "./lib/supplierHelpers";
 import { 
   CheckCircle2, 
   AlertCircle 
@@ -139,6 +142,8 @@ export default function App() {
   const [inventoryPacks, setInventoryPacks] = useState<InventoryPack[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [materialSuppliers, setMaterialSuppliers] = useState<MaterialSupplier[]>([]);
+  const [purchasePriceHistory, setPurchasePriceHistory] = useState<PurchasePriceHistory[]>([]);
   const [semiGoods, setSemiGoods] = useState<SemiFinishedGood[]>([]);
   const [requisitions, setRequisitions] = useState<RequisitionSlip[]>([]);
   const [isDbModalOpen, setIsDbModalOpen] = useState(false);
@@ -268,22 +273,22 @@ export default function App() {
 
   // Page-Targeted Table Dependencies: Fetch tables required by the active view
   const PAGE_TABLE_DEPENDENCIES: Record<string, string[]> = {
-    dashboard: ["production_orders", "raw_materials", "packing_orders", "prechecks", "products", "purchase_orders", "suppliers"],
+    dashboard: ["production_orders", "raw_materials", "packing_orders", "prechecks", "products", "purchase_orders", "suppliers", "material_suppliers"],
     projects: ["projects", "customers"],
     customer: ["customers", "production_orders", "bom_recipes"],
-    bom: ["bom_recipes", "products", "raw_materials", "production_orders", "customers", "suppliers"],
+    bom: ["bom_recipes", "products", "raw_materials", "production_orders", "customers", "suppliers", "material_suppliers"],
     precheck: ["prechecks"],
     production: ["production_orders", "products", "customers"],
     packing: ["packing_orders", "production_orders"],
-    purchase: ["purchase_orders", "raw_materials", "suppliers"],
-    grn: ["grns", "raw_materials", "purchase_orders", "suppliers"],
-    inventory: ["raw_materials", "inventory_pack", "production_orders", "bom_recipes", "products", "suppliers", "semi_finished_goods", "requisitions", "grns", "purchase_orders"],
+    purchase: ["purchase_orders", "raw_materials", "suppliers", "material_suppliers", "purchase_price_history"],
+    grn: ["grns", "raw_materials", "purchase_orders", "suppliers", "material_suppliers", "purchase_price_history"],
+    inventory: ["raw_materials", "inventory_pack", "production_orders", "bom_recipes", "products", "suppliers", "material_suppliers", "purchase_price_history", "semi_finished_goods", "requisitions", "grns", "purchase_orders"],
     incoming_qc: ["qc_inspections", "raw_material_lots", "raw_materials", "grns", "suppliers"],
     audit_log: ["audit_logs"],
     test_cases: ["raw_materials", "raw_material_lots", "suppliers", "qc_inspections"],
-    report: ["production_orders", "purchase_orders", "raw_materials", "products", "customers", "grns", "packing_orders", "prechecks", "suppliers"],
+    report: ["production_orders", "purchase_orders", "raw_materials", "products", "customers", "grns", "packing_orders", "prechecks", "suppliers", "material_suppliers", "purchase_price_history"],
     manual: [],
-    settings: ["projects", "customers", "bom_recipes", "prechecks", "production_orders", "packing_orders", "purchase_orders", "grns", "raw_materials", "inventory_pack", "suppliers", "products", "semi_finished_goods", "requisitions"]
+    settings: ["projects", "customers", "bom_recipes", "prechecks", "production_orders", "packing_orders", "purchase_orders", "grns", "raw_materials", "inventory_pack", "suppliers", "material_suppliers", "purchase_price_history", "products", "semi_finished_goods", "requisitions"]
   };
 
   // Helper to format BOM recipes
@@ -308,6 +313,8 @@ export default function App() {
     const prods = getLocalTable("products");
     const mats = getLocalTable("raw_materials");
     const sups = getLocalTable("suppliers");
+    const matSups = getLocalTable("material_suppliers");
+    const priceHist = getLocalTable("purchase_price_history");
     const lotsList = getLocalTable("raw_material_lots");
     const qcList = getLocalTable("qc_inspections");
     const logList = getLocalTable("audit_logs");
@@ -337,6 +344,8 @@ export default function App() {
     setInventoryPacks(packs);
     setProjects(projs);
     setSuppliers(sups);
+    setMaterialSuppliers(matSups);
+    setPurchasePriceHistory(priceHist);
     setSemiGoods(semiList);
     setRequisitions(reqList);
   };
@@ -350,6 +359,8 @@ export default function App() {
         case "products": setProducts(data); break;
         case "raw_materials": setRawMaterials(data); break;
         case "suppliers": setSuppliers(data); break;
+        case "material_suppliers": setMaterialSuppliers(data); break;
+        case "purchase_price_history": setPurchasePriceHistory(data); break;
         case "raw_material_lots": setRawMaterialLots(data); break;
         case "qc_inspections": setQcInspections(data); break;
         case "audit_logs": setAuditLogs(data); break;
@@ -392,7 +403,8 @@ export default function App() {
   const loadAllData = async () => {
     loadLocalImmediateState();
     const allTables = [
-      "customers", "products", "raw_materials", "suppliers", "raw_material_lots",
+      "customers", "products", "raw_materials", "suppliers",
+      "material_suppliers", "purchase_price_history", "raw_material_lots",
       "qc_inspections", "audit_logs", "bom_recipes", "semi_finished_goods",
       "production_orders", "packing_orders", "purchase_orders", "grns", "prechecks",
       "inventory_pack", "projects", "requisitions"
@@ -514,16 +526,55 @@ export default function App() {
   const handleSave = async (entity: string, payload: any, successMsg: string): Promise<void> => {
     try {
       await clientSave(entity, payload.id || 0, payload);
+
+      // Update Material_Suppliers & Purchase_Price_History automatically when saving a Purchase Order
+      if (entity === "purchase_orders" && payload?.supplier && Array.isArray(payload?.items)) {
+        for (const item of payload.items) {
+          const mat = rawMaterials.find((rm) => String(rm.id) === String(item.raw_material_id));
+          if (mat && Number(item.unit_price) > 0) {
+            await recordMaterialSupplierPurchase({
+              material: mat,
+              supplierName: payload.supplier,
+              unitPrice: Number(item.unit_price) || 0,
+              qty: Number(item.quantity) || 0,
+              unit: item.unit || mat.unit || "KG.",
+              purchaseDate: payload.order_date || new Date().toISOString().slice(0, 10),
+              sourceType: "PURCHASE_ORDER",
+              refDoc: payload.code || "",
+              recordedBy: "ฝ่ายจัดซื้อ (PO)",
+              existingSuppliers: suppliers,
+              existingMaterialSuppliers: materialSuppliers
+            });
+          }
+        }
+      }
+
       showToast(successMsg, "success");
       await refreshTable(entity, true);
       
       // Cascade-refresh related tables
-      if (entity === "purchase_orders" || entity === "production_orders") {
+      if (entity === "purchase_orders") {
+        await Promise.all([
+          refreshTable("raw_materials", true),
+          refreshTable("suppliers", true),
+          refreshTable("material_suppliers", true),
+          refreshTable("purchase_price_history", true)
+        ]);
+      } else if (entity === "production_orders") {
         refreshTable("raw_materials", true);
+      } else if (entity === "raw_materials") {
+        await Promise.all([
+          refreshTable("suppliers", true),
+          refreshTable("material_suppliers", true),
+          refreshTable("purchase_price_history", true)
+        ]);
       } else if (entity === "grns") {
         refreshTable("raw_materials", true);
         refreshTable("raw_material_lots", true);
         refreshTable("qc_inspections", true);
+        refreshTable("suppliers", true);
+        refreshTable("material_suppliers", true);
+        refreshTable("purchase_price_history", true);
       } else if (entity === "products") {
         refreshTable("bom_recipes", true);
       }
@@ -556,6 +607,8 @@ export default function App() {
       else if (entity === "inventory_pack") setInventoryPacks(prev => prev.filter(ip => String(ip.id) !== strId));
       else if (entity === "products") setProducts(prev => prev.filter(p => String(p.id) !== strId));
       else if (entity === "suppliers") setSuppliers(prev => prev.filter(s => String(s.id) !== strId));
+      else if (entity === "material_suppliers") setMaterialSuppliers(prev => prev.filter(ms => String(ms.id) !== strId && String(ms.code) !== strId));
+      else if (entity === "purchase_price_history") setPurchasePriceHistory(prev => prev.filter(ph => String(ph.id) !== strId));
       else if (entity === "semi_finished_goods") setSemiGoods(prev => prev.filter(s => String(s.id) !== strId));
       else if (entity === "requisitions") setRequisitions(prev => prev.filter(r => String(r.id) !== strId));
 
@@ -638,7 +691,25 @@ export default function App() {
 
       await clientSave("qc_inspections", 0, newQc);
 
-      // 3. Save Audit Log
+      // 3. Record/Update Material_Suppliers latest_price & Purchase_Price_History
+      const grnSupName = grn.supplier_name || mat.supplier_name || mat.supplier || "";
+      if (grnSupName && Number(unitPricePerKg) > 0) {
+        await recordMaterialSupplierPurchase({
+          material: mat,
+          supplierName: grnSupName,
+          unitPrice: unitPricePerKg,
+          qty,
+          unit: grn.unit || mat.unit || "KG.",
+          purchaseDate: grn.receive_date || new Date().toISOString().slice(0, 10),
+          sourceType: "GRN_RECEIVE",
+          refDoc: grn.code || "",
+          recordedBy: grn.receiver || "คลังสินค้า",
+          existingSuppliers: suppliers,
+          existingMaterialSuppliers: materialSuppliers
+        });
+      }
+
+      // 4. Save Audit Log
       await clientSave("audit_logs", 0, {
         user: grn.receiver || "คลังสินค้า",
         timestamp: new Date().toISOString(),
@@ -838,6 +909,8 @@ export default function App() {
             purchaseOrders={purchaseOrders}
             rawMaterials={rawMaterials}
             suppliers={suppliers}
+            materialSuppliers={materialSuppliers}
+            purchasePriceHistory={purchasePriceHistory}
             onAddPurchase={async (po) => handleSave("purchase_orders", po, "ออกใบสั่งสั่งซื้อเคมีภัณฑ์เสร็จสิ้น!")}
             onSavePurchase={async (po) => handleSave("purchase_orders", po, "บันทึกแก้ไขใบสั่งซื้อเรียบร้อยแล้ว!")}
             onDeletePurchase={async (id) => handleDelete("purchase_orders", id, "ลบใบสั่งซื้อเคมีภัณฑ์เรียบร้อยแล้ว!")}
@@ -873,12 +946,31 @@ export default function App() {
                       code: grnCode,
                       purchase_order_id: po.id,
                       raw_material_id: item.raw_material_id,
+                      supplier_name: po.supplier || "",
                       lot_number: lotNum,
                       expiry_date: expDate,
                       received_qty: item.quantity,
+                      unit_price: item.unit_price || 0,
                       receiver: "ระบบอัตโนมัติ (รับเข้าคลัง)",
                       receive_date: new Date().toISOString().slice(0, 10)
                     });
+
+                    const mat = rawMaterials.find(rm => rm.id === item.raw_material_id);
+                    if (mat && po.supplier && Number(item.unit_price) > 0) {
+                      await recordMaterialSupplierPurchase({
+                        material: mat,
+                        supplierName: po.supplier,
+                        unitPrice: Number(item.unit_price) || 0,
+                        qty: Number(item.quantity) || 0,
+                        unit: item.unit || mat.unit || "KG.",
+                        purchaseDate: new Date().toISOString().slice(0, 10),
+                        sourceType: "GRN_RECEIVE",
+                        refDoc: grnCode,
+                        recordedBy: "รับเข้าคลังจาก PO",
+                        existingSuppliers: suppliers,
+                        existingMaterialSuppliers: materialSuppliers
+                      });
+                    }
                   }
                 }
                 
@@ -897,6 +989,8 @@ export default function App() {
             rawMaterials={rawMaterials}
             purchaseOrders={purchaseOrders}
             suppliers={suppliers}
+            materialSuppliers={materialSuppliers}
+            purchasePriceHistory={purchasePriceHistory}
             qcInspections={qcInspections}
             lots={rawMaterialLots}
             auditLogs={auditLogs}
@@ -936,11 +1030,21 @@ export default function App() {
             bomRecipes={bomRecipes}
             products={products}
             suppliers={suppliers}
+            materialSuppliers={materialSuppliers}
+            purchasePriceHistory={purchasePriceHistory}
             semiGoods={semiGoods}
             requisitions={requisitions}
             grns={grns}
             purchaseOrders={purchaseOrders}
             setActivePage={setActivePage}
+            onRefreshSupplierData={async () => {
+              await Promise.all([
+                refreshTable("suppliers", true),
+                refreshTable("material_suppliers", true),
+                refreshTable("purchase_price_history", true),
+                refreshTable("raw_materials", true)
+              ]);
+            }}
             onSavePurchaseOrder={async (payload) => {
               await handleSave("purchase_orders", payload, "สร้างใบสั่งซื้อเคมีภัณฑ์สำเร็จ!");
             }}

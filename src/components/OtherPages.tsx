@@ -45,6 +45,8 @@ import {
   Grn, 
   InventoryPack,
   Supplier,
+  MaterialSupplier,
+  PurchasePriceHistory,
   QcInspection,
   RawMaterialLot,
   AuditLog
@@ -52,6 +54,7 @@ import {
 import QcPassLabelModal from "./QcPassLabelModal";
 import CoaDocumentModal from "./CoaDocumentModal";
 import StockCountModal from "./StockCountModal";
+import { getResolvedMaterialSuppliers, normalizeSupplierName } from "../lib/supplierHelpers";
 
 // Reusable active in-app Delete Confirmation Modal (NO window.confirm!)
 export function ConfirmDeleteDialog({
@@ -1068,6 +1071,8 @@ interface PurchasePageProps {
   purchaseOrders: PurchaseOrder[];
   rawMaterials: RawMaterial[];
   suppliers?: Supplier[];
+  materialSuppliers?: MaterialSupplier[];
+  purchasePriceHistory?: PurchasePriceHistory[];
   onAddPurchase?: (po: any) => Promise<void>;
   onSavePurchase?: (po: any) => Promise<void>;
   onDeletePurchase?: (id: number) => Promise<void>;
@@ -1077,6 +1082,8 @@ export function PurchasePage({
   purchaseOrders, 
   rawMaterials, 
   suppliers = [],
+  materialSuppliers = [],
+  purchasePriceHistory: _purchasePriceHistory = [],
   onAddPurchase,
   onSavePurchase,
   onDeletePurchase,
@@ -1095,6 +1102,20 @@ export function PurchasePage({
 
   const saveHandler = onSavePurchase || onAddPurchase;
 
+  const getSuggestedPriceForSupplier = (rmId: number | "", supName: string): number => {
+    if (!rmId) return 0;
+    const rm = rawMaterials.find((r) => r.id === Number(rmId));
+    if (!rm) return 0;
+    const refs = getResolvedMaterialSuppliers(rm, materialSuppliers, suppliers);
+    const matchedRef = supName
+      ? refs.find((r) => normalizeSupplierName(r.name) === normalizeSupplierName(supName))
+      : refs.find((r) => r.is_main) || refs[0];
+    if (matchedRef && matchedRef.latest_price && matchedRef.latest_price > 0) {
+      return matchedRef.latest_price;
+    }
+    return rm.unit_price || 0;
+  };
+
   const openFormModal = (po?: PurchaseOrder) => {
     if (po) {
       setEditingPurchase(po);
@@ -1108,10 +1129,13 @@ export function PurchasePage({
     } else {
       setEditingPurchase(null);
       setCode(`PRM-2026-${String(purchaseOrders.length + 22).padStart(4, "0")}`);
-      setSupplier("");
-      setMaterialId(rawMaterials.length > 0 ? rawMaterials[0].id : "");
+      const firstMat = rawMaterials[0];
+      const firstRefs = firstMat ? getResolvedMaterialSuppliers(firstMat, materialSuppliers, suppliers) : [];
+      const mainRef = firstRefs.find((r) => r.is_main) || firstRefs[0];
+      setSupplier(mainRef?.name || "");
+      setMaterialId(firstMat ? firstMat.id : "");
       setQuantity(100);
-      setPrice(50);
+      setPrice((mainRef?.latest_price && mainRef.latest_price > 0 ? mainRef.latest_price : firstMat?.unit_price) || 50);
       setStatus("pending");
     }
     setIsModalOpen(true);
@@ -1294,7 +1318,12 @@ export function PurchasePage({
                   {suppliers && suppliers.length > 0 ? (
                     <select
                       value={supplier}
-                      onChange={(e) => setSupplier(e.target.value)}
+                      onChange={(e) => {
+                        const nextSup = e.target.value;
+                        setSupplier(nextSup);
+                        const suggested = getSuggestedPriceForSupplier(materialId, nextSup);
+                        if (suggested > 0) setPrice(suggested);
+                      }}
                       required
                       className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white font-medium"
                     >
@@ -1325,21 +1354,73 @@ export function PurchasePage({
                     const id = Number(e.target.value);
                     setMaterialId(id);
                     const selected = rawMaterials.find(rm => rm.id === id);
-                    if (selected && (selected.supplier_name || selected.supplier) && !supplier) {
-                      setSupplier(selected.supplier_name || selected.supplier || "");
-                    }
-                    if (selected && selected.unit_price) {
-                      setPrice(selected.unit_price);
+                    if (selected) {
+                      const linked = getResolvedMaterialSuppliers(selected, materialSuppliers, suppliers);
+                      const mainRef = linked.find(s => s.is_main) || linked[0];
+                      const chosenSup =
+                        linked.find(s => normalizeSupplierName(s.name) === normalizeSupplierName(supplier)) ||
+                        mainRef;
+                      if (mainRef && !supplier) {
+                        setSupplier(mainRef.name);
+                      } else if ((selected.supplier_name || selected.supplier) && !supplier) {
+                        setSupplier(selected.supplier_name || selected.supplier || "");
+                      }
+                      const nextPrice =
+                        chosenSup?.latest_price && chosenSup.latest_price > 0
+                          ? chosenSup.latest_price
+                          : selected.unit_price || 0;
+                      if (nextPrice > 0) {
+                        setPrice(nextPrice);
+                      }
                     }
                   }} 
                   required 
                   className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white"
                 >
                   <option value="">-- กรุณาเลือกสารเคมี --</option>
-                  {rawMaterials.map(rm => (
-                    <option key={rm.id} value={rm.id}>{rm.code} - {rm.name} ({rm.supplier_name || rm.supplier || "ไม่ระบุซัพพลายเออร์"})</option>
-                  ))}
+                  {rawMaterials.map(rm => {
+                    const supNames = getResolvedMaterialSuppliers(rm, materialSuppliers, suppliers).map(s => s.name).join(", ");
+                    return (
+                      <option key={rm.id} value={rm.id}>
+                        {rm.code} - {rm.name} ({supNames || "ไม่ระบุซัพพลายเออร์"})
+                      </option>
+                    );
+                  })}
                 </select>
+                {(() => {
+                  const selectedMat = rawMaterials.find(rm => rm.id === Number(materialId));
+                  const linked = selectedMat ? getResolvedMaterialSuppliers(selectedMat, materialSuppliers, suppliers) : [];
+                  if (linked.length === 0) return null;
+                  return (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] font-semibold text-slate-500">Supplier ของวัตถุดิบนี้:</span>
+                      {linked.map((s, idx) => (
+                        <button
+                          key={`${s.code}_${idx}`}
+                          type="button"
+                          onClick={() => {
+                            setSupplier(s.name);
+                            const p = s.latest_price && s.latest_price > 0 ? s.latest_price : (selectedMat?.unit_price || 0);
+                            if (p > 0) setPrice(p);
+                          }}
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold border cursor-pointer transition-colors inline-flex items-center gap-1 ${
+                            normalizeSupplierName(supplier) === normalizeSupplierName(s.name)
+                              ? "bg-blue-600 text-white border-blue-600"
+                              : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-blue-50"
+                          }`}
+                        >
+                          {s.is_main && <span>★ หลัก</span>}
+                          <span>{s.code ? `${s.code}: ` : ""}{s.name}</span>
+                          {s.latest_price && s.latest_price > 0 ? (
+                            <span className={`font-mono ${normalizeSupplierName(supplier) === normalizeSupplierName(s.name) ? "text-blue-100" : "text-emerald-700"}`}>
+                              (฿{s.latest_price.toLocaleString()})
+                            </span>
+                          ) : null}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -1410,6 +1491,8 @@ interface GrnsPageProps {
   rawMaterials: RawMaterial[];
   purchaseOrders: PurchaseOrder[];
   suppliers?: Supplier[];
+  materialSuppliers?: MaterialSupplier[];
+  purchasePriceHistory?: PurchasePriceHistory[];
   qcInspections?: QcInspection[];
   lots?: RawMaterialLot[];
   auditLogs?: AuditLog[];
@@ -1427,6 +1510,8 @@ export function GrnsPage({
   rawMaterials, 
   purchaseOrders, 
   suppliers = [],
+  materialSuppliers = [],
+  purchasePriceHistory: _purchasePriceHistory = [],
   qcInspections = [],
   lots = [],
   auditLogs = [],
@@ -1514,8 +1599,15 @@ export function GrnsPage({
     setMaterialId(rmId);
     const rm = rawMaterials.find(r => r.id === rmId);
     if (rm) {
-      if (rm.unit_price) setUnitPrice(rm.unit_price);
-      if (rm.supplier_name || rm.supplier) setSupplierName(rm.supplier_name || rm.supplier || "");
+      const linked = getResolvedMaterialSuppliers(rm, materialSuppliers, suppliers);
+      const mainRef = linked.find(s => s.is_main) || linked[0];
+      if (mainRef) {
+        setSupplierName(mainRef.name);
+        setUnitPrice(mainRef.latest_price && mainRef.latest_price > 0 ? mainRef.latest_price : (rm.unit_price || 0));
+      } else {
+        if (rm.unit_price) setUnitPrice(rm.unit_price);
+        if (rm.supplier_name || rm.supplier) setSupplierName(rm.supplier_name || rm.supplier || "");
+      }
     }
   };
 
@@ -1995,9 +2087,12 @@ export function GrnsPage({
                   className="w-full px-3 py-2 border border-slate-300 rounded-xl font-bold bg-white"
                 >
                   <option value="">-- เลือกรายการเคมีภัณฑ์ --</option>
-                  {rawMaterials.map(rm => (
-                    <option key={rm.id} value={rm.id}>{rm.code} - {rm.name} ({rm.supplier_name || rm.supplier || 'ทั่วไป'})</option>
-                  ))}
+                  {rawMaterials.map(rm => {
+                    const supNames = getResolvedMaterialSuppliers(rm, materialSuppliers, suppliers).map(s => s.name).join(", ");
+                    return (
+                      <option key={rm.id} value={rm.id}>{rm.code} - {rm.name} ({supNames || 'ทั่วไป'})</option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -2011,6 +2106,42 @@ export function GrnsPage({
                     placeholder="เช่น IDEVA / De Roma"
                     className="w-full px-3 py-1.5 border border-slate-300 rounded-xl"
                   />
+                  {(() => {
+                    const selectedRm = rawMaterials.find(rm => rm.id === Number(materialId));
+                    const linked = selectedRm ? getResolvedMaterialSuppliers(selectedRm, materialSuppliers, suppliers) : [];
+                    if (linked.length === 0) return null;
+                    return (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {linked.map((s, idx) => (
+                          <button
+                            key={`${s.code}_${idx}`}
+                            type="button"
+                            onClick={() => {
+                              setSupplierName(s.name);
+                              if (s.latest_price && s.latest_price > 0) {
+                                setUnitPrice(s.latest_price);
+                              } else if (selectedRm?.unit_price) {
+                                setUnitPrice(selectedRm.unit_price);
+                              }
+                            }}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold border cursor-pointer transition-colors inline-flex items-center gap-1 ${
+                              normalizeSupplierName(supplierName) === normalizeSupplierName(s.name)
+                                ? "bg-emerald-600 text-white border-emerald-600"
+                                : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-emerald-50"
+                            }`}
+                          >
+                            {s.is_main && <span>★ หลัก</span>}
+                            <span>{s.code ? `${s.code} · ` : ""}{s.name}</span>
+                            {s.latest_price && s.latest_price > 0 ? (
+                              <span className={`font-mono ${normalizeSupplierName(supplierName) === normalizeSupplierName(s.name) ? "text-emerald-100" : "text-emerald-700"}`}>
+                                (฿{s.latest_price.toLocaleString()})
+                              </span>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div>
                   <label className="block font-bold text-slate-700 uppercase mb-1">ลักษณะสินค้า (Appearance)</label>

@@ -74,8 +74,13 @@
         "stock_qty": { "type": "number", "description": "Current stock quantity" },
         "min_stock": { "type": "number", "description": "Minimum safety stock" },
         "unit_price": { "type": "number", "description": "Unit cost" },
-        "supplier_id": { "type": "string", "description": "Supplier ID" },
-        "supplier_name": { "type": "string", "description": "Supplier Name" },
+        "supplier_id": { "type": "string", "description": "Primary Supplier ID" },
+        "supplier_code": { "type": "string", "description": "Primary Supplier Code" },
+        "supplier_name": { "type": "string", "description": "Primary Supplier Name" },
+        "supplier_ids": { "type": "array", "description": "All linked Supplier IDs" },
+        "supplier_codes": { "type": "array", "description": "All linked Supplier Codes" },
+        "supplier_names": { "type": "array", "description": "All linked Supplier Names" },
+        "suppliers_list": { "type": "array", "description": "Structured list of linked suppliers" },
         "storage_condition": { "type": "string", "description": "Storage condition" },
         "status": { "type": "string", "enum": ["active", "inactive"] },
         "coa_required": { "type": "boolean", "description": "Whether COA is required" },
@@ -386,6 +391,61 @@
         "subtotal": { "type": "number", "description": "Line total" }
       },
       "required": ["item_name", "quantity"]
+    },
+    "material_supplier": {
+      "title": "Material Supplier Link",
+      "description": "Many-to-many junction linking raw materials and suppliers with main supplier flag and latest purchase price",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "Deterministic link code MS-{material}-{supplier}" },
+        "material_id": { "type": "string", "description": "Reference to raw_materials" },
+        "material_code": { "type": "string", "description": "Material code" },
+        "material_name": { "type": "string", "description": "Material name" },
+        "supplier_id": { "type": "string", "description": "Reference to suppliers" },
+        "supplier_code": { "type": "string", "description": "Supplier code" },
+        "supplier_name": { "type": "string", "description": "Supplier name" },
+        "is_main": { "type": "boolean", "description": "Main Supplier flag" },
+        "latest_price": { "type": "number", "description": "Latest purchase price from this supplier" },
+        "currency": { "type": "string", "description": "Currency e.g. THB" },
+        "unit": { "type": "string", "description": "Purchase unit" },
+        "last_purchase_date": { "type": "string", "format": "date" },
+        "last_po_no": { "type": "string", "description": "Last PO reference" },
+        "last_grn_no": { "type": "string", "description": "Last GRN reference" },
+        "notes": { "type": "string", "description": "Notes" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "material_id", "supplier_id", "supplier_name"]
+    },
+    "purchase_price_history": {
+      "title": "Purchase Price History",
+      "description": "Historical purchase prices per material and supplier",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "code": { "type": "string", "description": "History entry code" },
+        "material_supplier_id": { "type": "string", "description": "Reference to material_suppliers link" },
+        "material_id": { "type": "string", "description": "Reference to raw_materials" },
+        "material_code": { "type": "string", "description": "Material code" },
+        "material_name": { "type": "string", "description": "Material name" },
+        "supplier_id": { "type": "string", "description": "Reference to suppliers" },
+        "supplier_code": { "type": "string", "description": "Supplier code" },
+        "supplier_name": { "type": "string", "description": "Supplier name" },
+        "unit_price": { "type": "number", "description": "Recorded purchase unit price" },
+        "previous_price": { "type": "number", "description": "Previous recorded price from same supplier" },
+        "unit": { "type": "string", "description": "Purchase unit" },
+        "currency": { "type": "string", "description": "Currency" },
+        "qty": { "type": "number", "description": "Purchased/received quantity" },
+        "purchase_date": { "type": "string", "format": "date" },
+        "source_type": { "type": "string", "enum": ["MATERIAL_FORM", "MANUAL_UPDATE", "PURCHASE_ORDER", "GRN_RECEIVE", "STOCK_IMPORT"] },
+        "ref_doc": { "type": "string", "description": "Reference PO/GRN document number" },
+        "recorded_by": { "type": "string", "description": "User who recorded the price" },
+        "notes": { "type": "string", "description": "Notes" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "material_id", "supplier_name", "unit_price", "purchase_date"]
     }
   },
   "firestore": {
@@ -468,6 +528,14 @@
     "/purchase_order_items/{itemId}": {
       "schema": "purchase_order_item",
       "description": "PO line items"
+    },
+    "/material_suppliers/{linkId}": {
+      "schema": "material_supplier",
+      "description": "Material-Supplier relational links with main supplier flag and latest price"
+    },
+    "/purchase_price_history/{historyId}": {
+      "schema": "purchase_price_history",
+      "description": "Historical purchase price records per material and supplier"
     }
   }
 }

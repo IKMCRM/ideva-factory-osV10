@@ -89,6 +89,58 @@ CREATE TABLE IF NOT EXISTS raw_materials (
 );
 
 -- ============================================================================
+-- 4B. MATERIAL_SUPPLIERS JUNCTION TABLE (M:N Materials <-> Suppliers)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS material_suppliers (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(120) NOT NULL UNIQUE,
+    material_id INT NOT NULL REFERENCES raw_materials(id) ON DELETE CASCADE,
+    material_code VARCHAR(50),
+    material_name VARCHAR(255),
+    supplier_id INT NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    supplier_code VARCHAR(50),
+    supplier_name VARCHAR(255) NOT NULL,
+    is_main BOOLEAN DEFAULT false,
+    latest_price DECIMAL(14,2) DEFAULT 0.00,
+    currency VARCHAR(10) DEFAULT 'THB',
+    unit VARCHAR(50) DEFAULT 'KG.',
+    last_purchase_date DATE,
+    last_po_no VARCHAR(100),
+    last_grn_no VARCHAR(100),
+    notes TEXT,
+    status VARCHAR(50) DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (material_id, supplier_id)
+);
+
+-- ============================================================================
+-- 4C. PURCHASE PRICE HISTORY TABLE (Historical Purchase Prices per Supplier)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS purchase_price_history (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(120) NOT NULL UNIQUE,
+    material_supplier_id INT REFERENCES material_suppliers(id) ON DELETE SET NULL,
+    material_id INT NOT NULL REFERENCES raw_materials(id) ON DELETE CASCADE,
+    material_code VARCHAR(50),
+    material_name VARCHAR(255),
+    supplier_id INT REFERENCES suppliers(id) ON DELETE SET NULL,
+    supplier_code VARCHAR(50),
+    supplier_name VARCHAR(255) NOT NULL,
+    unit_price DECIMAL(14,2) NOT NULL DEFAULT 0.00,
+    previous_price DECIMAL(14,2) DEFAULT 0.00,
+    unit VARCHAR(50) DEFAULT 'KG.',
+    currency VARCHAR(10) DEFAULT 'THB',
+    qty DECIMAL(12,4) DEFAULT 0.0000,
+    purchase_date DATE NOT NULL,
+    source_type VARCHAR(50) DEFAULT 'MANUAL_UPDATE',
+    ref_doc VARCHAR(100),
+    recorded_by VARCHAR(255),
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================================================
 -- 5. RAW MATERIAL LOTS TABLE
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS raw_material_lots (
@@ -388,7 +440,7 @@ DO $$
 DECLARE
     tbl TEXT;
     tables TEXT[] := ARRAY[
-        'suppliers', 'customers', 'products', 'raw_materials', 'raw_material_lots', 'qc_inspections', 'audit_logs',
+        'suppliers', 'customers', 'products', 'raw_materials', 'material_suppliers', 'purchase_price_history', 'raw_material_lots', 'qc_inspections', 'audit_logs',
         'bom_recipes', 'bom_items', 'production_orders', 'packing_orders',
         'purchase_orders', 'purchase_order_items', 'grns', 'prechecks',
         'inventory_pack', 'purchase_packs', 'projects', 'semi_finished_goods', 'requisitions'
@@ -408,7 +460,7 @@ DO $$
 DECLARE
     tbl TEXT;
     tables TEXT[] := ARRAY[
-        'suppliers', 'customers', 'products', 'raw_materials', 'raw_material_lots', 'qc_inspections', 'audit_logs',
+        'suppliers', 'customers', 'products', 'raw_materials', 'material_suppliers', 'purchase_price_history', 'raw_material_lots', 'qc_inspections', 'audit_logs',
         'bom_recipes', 'bom_items', 'production_orders', 'packing_orders',
         'purchase_orders', 'purchase_order_items', 'grns', 'prechecks',
         'inventory_pack', 'purchase_packs', 'projects', 'semi_finished_goods', 'requisitions'

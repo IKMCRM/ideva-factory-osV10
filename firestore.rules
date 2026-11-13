@@ -136,6 +136,18 @@ service cloud.firestore {
       allow write: if true;
     }
 
+    // Material Suppliers (Junction Table)
+    match /material_suppliers/{linkId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Purchase Price History
+    match /purchase_price_history/{historyId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
     // Connection testing
     match /test/{docId} {
       allow read: if true;

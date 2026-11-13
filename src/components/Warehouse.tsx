@@ -14,10 +14,20 @@ import {
   ClipboardList,
   ArrowRight,
   ShoppingCart,
-  Layers
+  Layers,
+  Building2,
+  Check,
+  ChevronDown,
+  Star,
+  History,
+  TrendingUp,
+  TrendingDown,
+  Coins,
+  Package
 } from "lucide-react";
 import { 
   RawMaterial, 
+  RawMaterialSupplierRef,
   InventoryPack, 
   ProductionOrder, 
   Grn, 
@@ -25,12 +35,26 @@ import {
   BomRecipe, 
   Product,
   Supplier,
+  MaterialSupplier,
+  PurchasePriceHistory,
   SemiFinishedGood,
   RequisitionSlip
 } from "../types";
 
 import { clientSave, getLocalTable } from "../lib/supabaseClient";
 import { OFFICIAL_SUPPLIERS } from "../lib/firebaseClient";
+import {
+  findMatchingSupplier,
+  generateNextMaterialNumericId,
+  generateNextSupplierCode,
+  generateNextSupplierNumericId,
+  getResolvedMaterialSuppliers,
+  getSupplierSuppliedMaterials,
+  normalizeSupplierName,
+  recordMaterialSupplierPurchase,
+  switchMainMaterialSupplier,
+  syncMaterialSuppliersAndHistory
+} from "../lib/supplierHelpers";
 
 // ============================================================================
 // EXACT SOLID ICONS MATCHING USER SCREENSHOT WITH PASTEL ACCENT SUPPORT
@@ -133,10 +157,13 @@ interface WarehouseProps {
   bomRecipes?: BomRecipe[];
   products?: Product[];
   suppliers?: Supplier[];
+  materialSuppliers?: MaterialSupplier[];
+  purchasePriceHistory?: PurchasePriceHistory[];
   semiGoods?: SemiFinishedGood[];
   requisitions?: RequisitionSlip[];
   grns?: Grn[];
   purchaseOrders?: PurchaseOrder[];
+  onRefreshSupplierData?: () => Promise<void>;
   onSaveRawMaterial?: (rm: any) => Promise<void>;
   onDeleteRawMaterial?: (id: number | string) => Promise<void>;
   onSaveInventoryPack?: (ip: any) => Promise<void>;
@@ -160,10 +187,13 @@ export default function Warehouse({
   bomRecipes = [],
   products = [],
   suppliers = [],
+  materialSuppliers = [],
+  purchasePriceHistory = [],
   semiGoods = [],
   requisitions = [],
   grns = [],
   purchaseOrders = [],
+  onRefreshSupplierData,
   onSaveRawMaterial,
   onDeleteRawMaterial,
   onSaveInventoryPack,
@@ -200,12 +230,32 @@ export default function Warehouse({
     image_url: "",
     status: "active"
   });
+  const [rawSuppliers, setRawSuppliers] = useState<RawMaterialSupplierRef[]>([]);
+  const [supplierInputText, setSupplierInputText] = useState("");
+  const [isSupplierDropdownOpen, setIsSupplierDropdownOpen] = useState(false);
+  const [isSavingRaw, setIsSavingRaw] = useState(false);
+
+  // Relational Material ↔ Supplier & Price History Modals
+  const [selectedMatRelModal, setSelectedMatRelModal] = useState<RawMaterial | null>(null);
+  const [matRelTab, setMatRelTab] = useState<"links" | "history">("links");
+  const [matRelHistorySupplierFilter, setMatRelHistorySupplierFilter] = useState<string>("all");
+  const [matRelAddName, setMatRelAddName] = useState("");
+  const [matRelAddPrice, setMatRelAddPrice] = useState<number>(0);
+  const [matRelAddIsMain, setMatRelAddIsMain] = useState(false);
+  const [editingLinkPrices, setEditingLinkPrices] = useState<Record<string, string>>({});
+  const [isSavingRelAction, setIsSavingRelAction] = useState(false);
+
+  const [selectedSupRelModal, setSelectedSupRelModal] = useState<Supplier | null>(null);
+  const [supRelTab, setSupRelTab] = useState<"materials" | "history">("materials");
+  const [supRelAddMatId, setSupRelAddMatId] = useState<number | "">("");
+  const [supRelAddPrice, setSupRelAddPrice] = useState<number>(0);
+  const [supRelAddIsMain, setSupRelAddIsMain] = useState(false);
 
   const [warehouseToast, setWarehouseToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
-  const showWarehouseToast = (message: string, type: "success" | "error" = "success") => {
+  const showWarehouseToast = (message: string, type: "success" | "error" = "success", durationMs = 3500) => {
     setWarehouseToast({ message, type });
-    setTimeout(() => setWarehouseToast(null), 3000);
+    setTimeout(() => setWarehouseToast(null), durationMs);
   };
 
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -329,32 +379,59 @@ export default function Warehouse({
 
   const supplierStatsMap = useMemo(() => {
     const map: Record<string, { count: number; totalVal: number }> = {};
-    for (const rm of rawMaterials) {
-      const sId = rm.supplier_id ? `id_${rm.supplier_id}` : null;
-      const sName = (rm.supplier_name || rm.supplier || "").trim();
-      const sCode = ((rm as any).supplier_code || "").trim();
-      const val = calculateMaterialTotalValue(rm.stock_qty, rm.unit_price || 0, rm.unit);
+    const addStat = (key: string, val: number) => {
+      if (!key) return;
+      if (!map[key]) map[key] = { count: 0, totalVal: 0 };
+      map[key].count += 1;
+      map[key].totalVal += val;
+    };
 
-      if (sId) {
-        if (!map[sId]) map[sId] = { count: 0, totalVal: 0 };
-        map[sId].count += 1;
-        map[sId].totalVal += val;
-      }
-      if (sName) {
-        if (!map[sName]) map[sName] = { count: 0, totalVal: 0 };
-        map[sName].count += 1;
-        map[sName].totalVal += val;
-      }
-      if (sCode) {
-        if (!map[sCode]) map[sCode] = { count: 0, totalVal: 0 };
-        map[sCode].count += 1;
-        map[sCode].totalVal += val;
+    for (const rm of rawMaterials) {
+      const val = calculateMaterialTotalValue(rm.stock_qty, rm.unit_price || 0, rm.unit);
+      const refs = getResolvedMaterialSuppliers(rm, materialSuppliers, activeSuppliers);
+      const seenIds = new Set<string>();
+      const seenCodes = new Set<string>();
+      const seenNames = new Set<string>();
+
+      for (const ref of refs) {
+        if (ref.id !== undefined && ref.id !== null && ref.id !== "") {
+          const idKey = `id_${ref.id}`;
+          if (!seenIds.has(idKey)) {
+            seenIds.add(idKey);
+            addStat(idKey, val);
+          }
+        }
+        if (ref.code) {
+          const codeKey = `code_${String(ref.code).trim().toUpperCase()}`;
+          if (!seenCodes.has(codeKey)) {
+            seenCodes.add(codeKey);
+            addStat(codeKey, val);
+          }
+        }
+        if (ref.name) {
+          const normName = normalizeSupplierName(ref.name);
+          if (normName && !seenNames.has(normName)) {
+            seenNames.add(normName);
+            addStat(`name_${normName}`, val);
+          }
+        }
       }
     }
     return map;
-  }, [rawMaterials]);
+  }, [rawMaterials, activeSuppliers, materialSuppliers]);
 
-  const supplierList = Array.from(new Set(activeSuppliers.map(s => s.name)));
+  const supplierList = useMemo(() => {
+    const names = new Set<string>();
+    activeSuppliers.forEach((s) => {
+      if (s.name?.trim()) names.add(s.name.trim());
+    });
+    rawMaterials.forEach((rm) => {
+      getResolvedMaterialSuppliers(rm, materialSuppliers, activeSuppliers).forEach((ref) => {
+        if (ref.name?.trim()) names.add(ref.name.trim());
+      });
+    });
+    return Array.from(names);
+  }, [activeSuppliers, rawMaterials, materialSuppliers]);
 
   // Shortage items
   const shortageMaterials = rawMaterials.filter((rm) => rm.stock_qty <= rm.min_stock);
@@ -646,17 +723,24 @@ export default function Warehouse({
   const openRawModal = (rm: RawMaterial | null = null) => {
     if (rm) {
       setEditingRaw(rm);
+      const existingRefs = getResolvedMaterialSuppliers(rm, materialSuppliers, activeSuppliers).map((ref, idx) => ({
+        ...ref,
+        is_main: ref.is_main !== undefined ? Boolean(ref.is_main) : idx === 0,
+        latest_price: ref.latest_price !== undefined ? ref.latest_price : (idx === 0 ? rm.unit_price || 0 : 0)
+      }));
+      const mainSup = existingRefs.find((r) => r.is_main) || existingRefs[0];
       setRawForm({
         code: rm.code,
         name: rm.name,
         unit: rm.unit || "KG.",
         stock_qty: rm.stock_qty,
         min_stock: rm.min_stock,
-        unit_price: rm.unit_price || 0,
-        supplier_name: rm.supplier_name || rm.supplier || "",
+        unit_price: (mainSup?.latest_price && mainSup.latest_price > 0 ? mainSup.latest_price : rm.unit_price) || 0,
+        supplier_name: mainSup?.name || rm.supplier_name || rm.supplier || "",
         image_url: rm.image_url || "",
         status: rm.status
       });
+      setRawSuppliers(existingRefs);
     } else {
       const existingCodes = new Set(rawMaterials.map((r) => (r.code || "").trim().toUpperCase()));
       let codeNum = rawMaterials.length + 1;
@@ -677,29 +761,203 @@ export default function Warehouse({
         image_url: "",
         status: "active"
       });
+      setRawSuppliers([]);
     }
+    setSupplierInputText("");
+    setIsSupplierDropdownOpen(false);
+    setIsSavingRaw(false);
     setIsRawModalOpen(true);
+  };
+
+  const addSupplierToRawList = (entry: { id?: number | string; code?: string; name: string }) => {
+    const cleanName = String(entry.name || "").trim().replace(/\s+/g, " ");
+    if (!cleanName) return;
+
+    const matched = findMatchingSupplier(
+      { id: entry.id, code: entry.code, name: cleanName },
+      activeSuppliers
+    );
+    const baseEntry: RawMaterialSupplierRef = matched
+      ? { id: matched.id, code: matched.code, name: matched.name }
+      : { code: "", name: cleanName };
+
+    setRawSuppliers((prev) => {
+      const targetNorm = normalizeSupplierName(baseEntry.name);
+      const alreadyExists = prev.some(
+        (item) =>
+          normalizeSupplierName(item.name) === targetNorm ||
+          (baseEntry.code && item.code && item.code.toUpperCase() === baseEntry.code.toUpperCase())
+      );
+      if (alreadyExists) return prev;
+      const isFirst = prev.length === 0;
+      return [
+        ...prev,
+        {
+          ...baseEntry,
+          is_main: isFirst,
+          latest_price: isFirst ? Number(rawForm.unit_price) || 0 : 0
+        }
+      ];
+    });
+    setSupplierInputText("");
+    setIsSupplierDropdownOpen(false);
+  };
+
+  const removeSupplierFromRawList = (idx: number) => {
+    setRawSuppliers((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      if (next.length > 0 && !next.some((s) => s.is_main)) {
+        next[0] = { ...next[0], is_main: true };
+      }
+      return next;
+    });
+  };
+
+  const setPrimarySupplierInRawList = (idx: number) => {
+    setRawSuppliers((prev) => {
+      if (idx < 0 || idx >= prev.length) return prev;
+      const target = { ...prev[idx], is_main: true };
+      const others = prev.filter((_, i) => i !== idx).map((s) => ({ ...s, is_main: false }));
+      if (target.latest_price && target.latest_price > 0) {
+        setRawForm((f) => ({ ...f, unit_price: Number(target.latest_price) }));
+      }
+      return [target, ...others];
+    });
+  };
+
+  const updateSupplierPriceInRawList = (idx: number, priceVal: number) => {
+    setRawSuppliers((prev) => {
+      const next = prev.map((item, i) => (i === idx ? { ...item, latest_price: priceVal } : item));
+      const target = next[idx];
+      if (target && (target.is_main || idx === 0) && priceVal > 0) {
+        setRawForm((f) => ({ ...f, unit_price: priceVal }));
+      }
+      return next;
+    });
   };
 
   const handleSaveRaw = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!rawForm.code.trim() || !rawForm.name.trim()) return;
-    if (onSaveRawMaterial) {
-      await onSaveRawMaterial({
-        id: editingRaw ? editingRaw.id : 0,
-        code: rawForm.code.trim(),
-        name: rawForm.name.trim(),
-        unit: rawForm.unit,
-        stock_qty: Number(rawForm.stock_qty) || 0,
-        min_stock: Number(rawForm.min_stock) || 0,
-        unit_price: Number(rawForm.unit_price) || 0,
-        supplier_name: rawForm.supplier_name.trim(),
-        image_url: rawForm.image_url.trim(),
-        status: rawForm.status
+    if (!rawForm.code.trim() || !rawForm.name.trim() || isSavingRaw) return;
+
+    setIsSavingRaw(true);
+    try {
+      const materialNumericId = editingRaw ? editingRaw.id : generateNextMaterialNumericId(rawMaterials);
+
+      // Combine explicit multi-supplier chips + any pending typed text in supplier input
+      const pendingInputs = rawSuppliers.map((s, idx) => ({
+        id: s.id,
+        code: s.code,
+        name: s.name,
+        is_main: s.is_main !== undefined ? Boolean(s.is_main) : idx === 0,
+        latest_price:
+          s.latest_price !== undefined && s.latest_price > 0
+            ? Number(s.latest_price)
+            : (s.is_main || idx === 0 ? Number(rawForm.unit_price) || 0 : 0),
+        last_purchase_date: s.last_purchase_date
+      }));
+
+      const typedPending = supplierInputText.trim().replace(/\s+/g, " ");
+      if (typedPending) {
+        const alreadyIncluded = pendingInputs.some(
+          (item) => normalizeSupplierName(item.name) === normalizeSupplierName(typedPending)
+        );
+        if (!alreadyIncluded) {
+          pendingInputs.push({
+            id: undefined,
+            code: undefined,
+            name: typedPending,
+            is_main: pendingInputs.length === 0,
+            latest_price: pendingInputs.length === 0 ? Number(rawForm.unit_price) || 0 : 0,
+            last_purchase_date: undefined
+          });
+        }
+      }
+
+      // Auto-check existing suppliers, auto-create new ones, sync Material_Suppliers, and log Purchase_Price_History
+      const {
+        resolvedSuppliers,
+        existingMatched,
+        newlyCreated,
+        primarySupplier,
+        historyCount
+      } = await syncMaterialSuppliersAndHistory({
+        material: {
+          id: materialNumericId,
+          code: rawForm.code.trim(),
+          name: rawForm.name.trim(),
+          unit: rawForm.unit
+        },
+        supplierInputs: pendingInputs,
+        existingSuppliers: activeSuppliers,
+        existingMaterialSuppliers: materialSuppliers,
+        sourceType: "MATERIAL_FORM",
+        refDoc: rawForm.code.trim()
       });
-      showWarehouseToast("✓ บันทึกข้อมูลวัตถุดิบเรียบร้อยแล้ว!");
+
+      const primaryNumericId =
+        primarySupplier?.id !== undefined && !isNaN(Number(primarySupplier.id))
+          ? Number(primarySupplier.id)
+          : undefined;
+
+      const finalUnitPrice =
+        primarySupplier?.latest_price && primarySupplier.latest_price > 0
+          ? Number(primarySupplier.latest_price)
+          : Number(rawForm.unit_price) || 0;
+
+      if (onSaveRawMaterial) {
+        await onSaveRawMaterial({
+          ...(editingRaw || {}),
+          id: materialNumericId,
+          code: rawForm.code.trim(),
+          name: rawForm.name.trim(),
+          unit: rawForm.unit,
+          stock_qty: Number(rawForm.stock_qty) || 0,
+          min_stock: Number(rawForm.min_stock) || 0,
+          unit_price: finalUnitPrice,
+          supplier_id: primaryNumericId,
+          supplier_code: primarySupplier?.code || "",
+          supplier_name: primarySupplier?.name || "",
+          supplier: primarySupplier?.name || "",
+          supplier_ids: resolvedSuppliers
+            .map((s) => s.id)
+            .filter((v): v is number | string => v !== undefined && v !== null && v !== ""),
+          supplier_codes: resolvedSuppliers.map((s) => s.code),
+          supplier_names: resolvedSuppliers.map((s) => s.name),
+          suppliers_list: resolvedSuppliers,
+          image_url: rawForm.image_url.trim(),
+          status: rawForm.status
+        });
+      }
+
+      if (onRefreshSupplierData) {
+        await onRefreshSupplierData();
+      }
+
+      const historyNote = historyCount > 0 ? ` · บันทึกประวัติราคา ${historyCount} รายการ` : "";
+      if (newlyCreated.length > 0) {
+        const createdSummary = newlyCreated.map((s) => `${s.code} (${s.name})`).join(", ");
+        showWarehouseToast(
+          `✓ บันทึกวัตถุดิบและสร้าง Supplier ใหม่อัตโนมัติ ${newlyCreated.length} ราย: ${createdSummary}${historyNote}`,
+          "success",
+          5500
+        );
+      } else if (existingMatched.length > 0) {
+        const matchedSummary = existingMatched.map((s) => s.code).join(", ");
+        showWarehouseToast(
+          `✓ บันทึกวัตถุดิบเรียบร้อย! เชื่อมโยง Supplier (${matchedSummary})${historyNote}`,
+          "success",
+          4500
+        );
+      } else {
+        showWarehouseToast(`✓ บันทึกข้อมูลวัตถุดิบเรียบร้อยแล้ว!${historyNote}`);
+      }
+      setIsRawModalOpen(false);
+    } catch (err: any) {
+      showWarehouseToast(err?.message || "เกิดข้อผิดพลาดในการบันทึกข้อมูลวัตถุดิบ/Supplier", "error", 5000);
+    } finally {
+      setIsSavingRaw(false);
     }
-    setIsRawModalOpen(false);
   };
 
   // Helper actions for Packaging
@@ -766,10 +1024,9 @@ export default function Warehouse({
         status: sup.status || "active"
       });
     } else {
-      const nextNum = (suppliers?.length || 0) + 1;
       setEditingSupplier(null);
       setSupplierForm({
-        code: `SUP-${String(nextNum).padStart(4, "0")}`,
+        code: generateNextSupplierCode(activeSuppliers),
         name: "",
         contact: "",
         phone: "",
@@ -784,11 +1041,13 @@ export default function Warehouse({
   const handleSaveSupplier = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supplierForm.name.trim()) return;
+    const cleanName = supplierForm.name.trim().replace(/\s+/g, " ");
     if (onSaveSupplier) {
       await onSaveSupplier({
-        id: editingSupplier ? editingSupplier.id : 0,
-        code: supplierForm.code.trim() || `SUP-${Date.now().toString().slice(-4)}`,
-        name: supplierForm.name.trim(),
+        id: editingSupplier ? editingSupplier.id : generateNextSupplierNumericId(activeSuppliers),
+        code: supplierForm.code.trim() || generateNextSupplierCode(activeSuppliers),
+        name: cleanName,
+        company_name: cleanName,
         contact: supplierForm.contact.trim(),
         phone: supplierForm.phone.trim(),
         email: supplierForm.email.trim(),
@@ -962,8 +1221,10 @@ export default function Warehouse({
         console.warn("Could not save GRN lot record:", e);
       }
 
-      // 2. Update Raw Material total stock and lot price
+      // 2. Update Raw Material total stock and lot price (preserving multi-supplier links)
+      const importSupName = target.supplier_name || target.supplier || "";
       await onSaveRawMaterial({
+        ...target,
         id: target.id,
         code: target.code,
         name: target.name,
@@ -971,10 +1232,32 @@ export default function Warehouse({
         stock_qty: Number(target.stock_qty || 0) + Number(importForm.qty),
         min_stock: target.min_stock,
         unit_price: lotUnitPrice,
-        supplier_name: target.supplier_name || target.supplier || "",
+        supplier_name: importSupName,
         status: target.status,
         image_url: target.image_url || ""
       });
+
+      // 3. Record latest_price + purchase_price_history on Material_Suppliers
+      if (importSupName && lotUnitPrice > 0) {
+        await recordMaterialSupplierPurchase({
+          material: {
+            ...target,
+            stock_qty: Number(target.stock_qty || 0) + Number(importForm.qty),
+            unit_price: lotUnitPrice
+          },
+          supplierName: importSupName,
+          unitPrice: lotUnitPrice,
+          qty: Number(importForm.qty),
+          unit: target.unit || "KG.",
+          purchaseDate: new Date().toISOString().slice(0, 10),
+          sourceType: "STOCK_IMPORT",
+          refDoc: lotNum,
+          recordedBy: importForm.receiver || "เจ้าหน้าที่คลังสินค้า",
+          existingSuppliers: activeSuppliers,
+          existingMaterialSuppliers: materialSuppliers
+        });
+        if (onRefreshSupplierData) await onRefreshSupplierData();
+      }
       showWarehouseToast(`✓ รับเข้าวัตถุดิบ ${target.name} ล็อต ${lotNum} จำนวน ${importForm.qty} ${target.unit} (ราคา ฿${lotUnitPrice}/หน่วย) สำเร็จแล้ว!`);
       setActiveSection("raw");
     } else if (importType === "consumable") {
@@ -1161,11 +1444,10 @@ export default function Warehouse({
                 type="button"
                 onClick={() => {
                   const dataToExport = activeSuppliers.map((s) => {
-                    const stats = supplierStatsMap[`id_${s.id}`] || 
-                      supplierStatsMap[s.name] || 
-                      supplierStatsMap[(s.name || "").trim()] || 
-                      supplierStatsMap[s.code] || 
-                      supplierStatsMap[(s.code || "").trim()] || 
+                    const stats =
+                      (s.id ? supplierStatsMap[`id_${s.id}`] : undefined) ||
+                      (s.code ? supplierStatsMap[`code_${String(s.code).trim().toUpperCase()}`] : undefined) ||
+                      (s.name ? supplierStatsMap[`name_${normalizeSupplierName(s.name)}`] : undefined) ||
                       { count: 0, totalVal: 0 };
                     return [s.code, s.name, s.contact || "-", s.phone || "-", s.email || "-", s.address || "-", stats.count, stats.totalVal];
                   });
@@ -1237,11 +1519,10 @@ export default function Warehouse({
                     );
                   })
                   .map((sup, idx) => {
-                    const stats = supplierStatsMap[`id_${sup.id}`] || 
-                      supplierStatsMap[sup.name] || 
-                      supplierStatsMap[(sup.name || "").trim()] || 
-                      supplierStatsMap[sup.code] || 
-                      supplierStatsMap[(sup.code || "").trim()] || 
+                    const stats =
+                      (sup.id ? supplierStatsMap[`id_${sup.id}`] : undefined) ||
+                      (sup.code ? supplierStatsMap[`code_${String(sup.code).trim().toUpperCase()}`] : undefined) ||
+                      (sup.name ? supplierStatsMap[`name_${normalizeSupplierName(sup.name)}`] : undefined) ||
                       { count: 0, totalVal: 0 };
                     const itemsBySupCount = stats.count;
                     const totalSupVal = stats.totalVal;
@@ -1295,18 +1576,19 @@ export default function Warehouse({
                           {sup.address || "-"}
                         </td>
 
-                        {/* Chemical Count */}
+                        {/* Chemical Count — opens relational Supplier -> Materials Modal */}
                         <td className="p-2 border border-slate-200 text-center">
                           <button
                             type="button"
                             onClick={() => {
-                              setSupplierFilter(sup.name);
-                              setActiveSection("raw");
+                              setSelectedSupRelModal(sup);
+                              setSupRelTab("materials");
                             }}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-all cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-all cursor-pointer shadow-2xs"
+                            title="ดูรายการวัตถุดิบทั้งหมดที่ Supplier รายนี้จำหน่าย พร้อมราคาซื้อล่าสุด"
                           >
+                            <Package className="w-3 h-3" />
                             <span>{itemsBySupCount} รายการ</span>
-                            <ArrowRight className="w-3 h-3" />
                           </button>
                         </td>
 
@@ -1321,13 +1603,13 @@ export default function Warehouse({
                             <button
                               type="button"
                               onClick={() => {
-                                setSupplierFilter(sup.name);
-                                setActiveSection("raw");
+                                setSelectedSupRelModal(sup);
+                                setSupRelTab("materials");
                               }}
-                              className="p-1 text-blue-600 hover:bg-blue-100 rounded-lg transition-all cursor-pointer"
-                              title="ดูรายการเคมีดิบจากผู้จำหน่ายนี้"
+                              className="px-2 py-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                              title="ดูวัตถุดิบที่จำหน่าย & ประวัติราคา"
                             >
-                              <Search className="w-3.5 h-3.5" />
+                              <Coins className="w-3 h-3" /> วัตถุดิบ & ราคา
                             </button>
                             <button
                               type="button"
@@ -1372,10 +1654,7 @@ export default function Warehouse({
               <span className="text-slate-300">|</span>
               <span>
                 มูลค่าสต็อกเคมีภัณฑ์รวม: <strong className="text-emerald-700 font-mono text-sm">
-                  ฿{activeSuppliers.reduce((sum, s) => {
-                    const items = rawMaterials.filter((rm) => (rm.supplier_name || rm.supplier) === s.name);
-                    return sum + items.reduce((iSum, rm) => iSum + calculateMaterialTotalValue(rm.stock_qty, rm.unit_price || 0, rm.unit), 0);
-                  }, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ฿{rawMaterials.reduce((sum, rm) => sum + calculateMaterialTotalValue(rm.stock_qty, rm.unit_price || 0, rm.unit), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </strong>
               </span>
             </div>
@@ -1466,24 +1745,68 @@ export default function Warehouse({
                   <th className="p-2.5 text-center">หน่วยนับ</th>
                   <th className="p-2.5 text-right">มูลค่ารวม</th>
                   <th className="p-2.5 text-center">สถานะสต็อก</th>
-                  <th className="p-2.5 text-center w-24">จัดการ</th>
+                  <th className="p-2.5 text-center w-44">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rawMaterials
                   .filter((rm) => {
-                    const matchSearch = (rm.code + " " + rm.name).toLowerCase().includes(searchTerm.toLowerCase());
-                    const matchSup = supplierFilter === "all" || (rm.supplier_name || rm.supplier) === supplierFilter;
+                    const refs = getResolvedMaterialSuppliers(rm, materialSuppliers, activeSuppliers);
+                    const supplierKeywords = refs.map((r) => `${r.code} ${r.name}`).join(" ");
+                    const matchSearch = (rm.code + " " + rm.name + " " + supplierKeywords)
+                      .toLowerCase()
+                      .includes(searchTerm.toLowerCase());
+                    const matchSup =
+                      supplierFilter === "all" ||
+                      refs.some(
+                        (r) =>
+                          normalizeSupplierName(r.name) === normalizeSupplierName(supplierFilter) ||
+                          (r.code && r.code.trim().toUpperCase() === supplierFilter.trim().toUpperCase())
+                      );
                     return matchSearch && matchSup;
                   })
                   .map((rm) => {
                     const isLow = rm.stock_qty <= rm.min_stock;
                     const totalVal = calculateMaterialTotalValue(rm.stock_qty, rm.unit_price || 0, rm.unit);
+                    const linkedSuppliers = getResolvedMaterialSuppliers(rm, materialSuppliers, activeSuppliers);
                     return (
                       <tr key={rm.id} className="hover:bg-slate-50 transition-colors">
                         <td className="p-2.5 font-bold font-mono text-blue-700">{rm.code}</td>
                         <td className="p-2.5 font-bold text-slate-800">{rm.name}</td>
-                        <td className="p-2.5 text-slate-600 text-[11px]">{rm.supplier_name || rm.supplier || "-"}</td>
+                        <td className="p-2.5 text-slate-600 text-[11px]">
+                          {linkedSuppliers.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 max-w-[320px]">
+                              {linkedSuppliers.map((supRef, sIdx) => (
+                                <span
+                                  key={`${supRef.code || supRef.name}_${sIdx}`}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border text-[10px] font-semibold ${
+                                    supRef.is_main || sIdx === 0
+                                      ? "bg-sky-50 text-sky-900 border-sky-300 shadow-2xs"
+                                      : "bg-slate-50 text-slate-700 border-slate-200"
+                                  }`}
+                                  title={`${supRef.is_main ? "[หลัก] " : ""}${supRef.code ? `${supRef.code} - ` : ""}${supRef.name}${supRef.latest_price ? ` | ราคาล่าสุด ฿${supRef.latest_price.toLocaleString()}` : ""}`}
+                                >
+                                  {(supRef.is_main || sIdx === 0) && (
+                                    <Star className="w-2.5 h-2.5 text-amber-500 fill-amber-400 shrink-0" />
+                                  )}
+                                  {supRef.code && (
+                                    <span className="font-mono font-bold text-[9px] text-blue-700 bg-white px-1 rounded border border-blue-100">
+                                      {supRef.code}
+                                    </span>
+                                  )}
+                                  <span className="truncate max-w-[145px]">{supRef.name}</span>
+                                  {supRef.latest_price && supRef.latest_price > 0 ? (
+                                    <span className="font-mono font-bold text-[9px] text-emerald-700 bg-emerald-50 px-1 rounded border border-emerald-200">
+                                      ฿{supRef.latest_price.toLocaleString()}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
                         <td className="p-2.5 text-right font-mono">฿{(rm.unit_price || 0).toLocaleString()}</td>
                         <td className={`p-2.5 text-right font-bold font-mono ${isLow ? "text-red-600" : "text-slate-800"}`}>
                           {rm.stock_qty.toLocaleString()}
@@ -1502,7 +1825,19 @@ export default function Warehouse({
                           </span>
                         </td>
                         <td className="p-2.5 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedMatRelModal(rm);
+                                setMatRelTab("links");
+                                setMatRelHistorySupplierFilter("all");
+                              }}
+                              className="px-2 py-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md cursor-pointer transition-colors whitespace-nowrap shadow-2xs flex items-center gap-1"
+                              title="จัดการ Supplier หลัก/รอง ราคาล่าสุด และประวัติราคาซื้อย้อนหลัง"
+                            >
+                              <History className="w-3 h-3" /> Supplier & ราคา
+                            </button>
                             <button
                               type="button"
                               onClick={() => setSelectedLotMaterial(rm)}
@@ -2713,7 +3048,10 @@ export default function Warehouse({
                 onClick={() => {
                   const dataToExport =
                     activeSection === "shortage"
-                      ? shortageMaterials.map((m) => [m.code, m.name, m.stock_qty, m.min_stock, m.unit, m.supplier_name || "-"])
+                      ? shortageMaterials.map((m) => {
+                          const sups = getResolvedMaterialSuppliers(m, materialSuppliers, activeSuppliers).map((s) => s.name).join(", ");
+                          return [m.code, m.name, m.stock_qty, m.min_stock, m.unit, sups || "-"];
+                        })
                       : rawMaterials.map((m) => [m.code, m.name, m.stock_qty, m.min_stock, m.unit, m.unit_price || 0]);
                   exportToCSV(
                     dataToExport,
@@ -2863,16 +3201,20 @@ export default function Warehouse({
       {/* Raw Material Add/Edit Modal */}
       {isRawModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden">
-            <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-xl max-h-[92vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50 shrink-0">
               <h3 className="text-sm font-bold text-slate-800">
                 {editingRaw ? "แก้ไขวัตถุดิบเคมีดิบ" : "เพิ่มวัตถุดิบเคมีดิบใหม่"}
               </h3>
-              <button onClick={() => setIsRawModalOpen(false)} className="text-slate-400 hover:text-slate-600">
+              <button
+                type="button"
+                onClick={() => setIsRawModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <form onSubmit={handleSaveRaw} className="p-5 space-y-4">
+            <form onSubmit={handleSaveRaw} className="p-5 space-y-4 overflow-y-auto">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">รหัสเคมีดิบ *</label>
@@ -2907,19 +3249,281 @@ export default function Warehouse({
                   value={rawForm.name}
                   onChange={(e) => setRawForm({ ...rawForm, name: e.target.value })}
                   className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold"
+                  placeholder="เช่น Glycerin 99.5%, Niacinamide"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">ผู้จำหน่าย (Supplier)</label>
-                <input
-                  type="text"
-                  value={rawForm.supplier_name}
-                  onChange={(e) => setRawForm({ ...rawForm, supplier_name: e.target.value })}
-                  className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl"
-                  placeholder="เช่น บริษัท โกลบอลเคมีคอล ซัพพลาย จำกัด"
-                />
-              </div>
+              {/* Multi-Supplier Selector & Auto-Creation Engine */}
+              {(() => {
+                const trimmedInput = supplierInputText.trim().replace(/\s+/g, " ");
+                const matchedExisting = trimmedInput
+                  ? findMatchingSupplier({ name: trimmedInput }, activeSuppliers)
+                  : undefined;
+
+                // Filter suggestions excluding already added ones
+                const addedNorms = new Set(rawSuppliers.map((s) => normalizeSupplierName(s.name)));
+                const suggestions = activeSuppliers.filter((sup) => {
+                  if (addedNorms.has(normalizeSupplierName(sup.name))) return false;
+                  if (!trimmedInput) return true;
+                  const q = trimmedInput.toLowerCase();
+                  return (
+                    (sup.name || "").toLowerCase().includes(q) ||
+                    (sup.company_name || "").toLowerCase().includes(q) ||
+                    (sup.code || "").toLowerCase().includes(q)
+                  );
+                });
+
+                // Compute preview sequential SUP-XXXX codes for new suppliers not yet in activeSuppliers
+                const virtualExisting = [...activeSuppliers];
+                let previewCodeForInput = "";
+                const previewCodeByIdx: Record<number, string> = {};
+
+                rawSuppliers.forEach((item, idx) => {
+                  const found = findMatchingSupplier(item, virtualExisting);
+                  if (!found) {
+                    const nextCode = generateNextSupplierCode(virtualExisting);
+                    previewCodeByIdx[idx] = nextCode;
+                    virtualExisting.push({
+                      id: 900000 + idx,
+                      code: nextCode,
+                      name: item.name,
+                      status: "active"
+                    });
+                  }
+                });
+
+                if (trimmedInput && !matchedExisting && !addedNorms.has(normalizeSupplierName(trimmedInput))) {
+                  previewCodeForInput = generateNextSupplierCode(virtualExisting);
+                }
+
+                return (
+                  <div className="bg-slate-50/90 border border-slate-200 rounded-2xl p-3.5 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <Building2 className="w-4 h-4 text-blue-600" />
+                        <span>ผู้จำหน่าย (Supplier) — กำหนดได้มากกว่า 1 ราย</span>
+                      </label>
+                      <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
+                        {rawSuppliers.length} รายการที่เลือก
+                      </span>
+                    </div>
+
+                    {/* Input + Add Button + Live Autocomplete Dropdown */}
+                    <div className="relative">
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            value={supplierInputText}
+                            onFocus={() => setIsSupplierDropdownOpen(true)}
+                            onBlur={() => {
+                              setTimeout(() => setIsSupplierDropdownOpen(false), 180);
+                            }}
+                            onChange={(e) => {
+                              setSupplierInputText(e.target.value);
+                              setIsSupplierDropdownOpen(true);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                if (trimmedInput) {
+                                  addSupplierToRawList({ name: trimmedInput });
+                                }
+                              }
+                            }}
+                            className="w-full pl-3 pr-8 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-medium"
+                            placeholder="พิมพ์ชื่อบริษัท Supplier เช่น บริษัท กลูมมิ่ง จำกัด หรือเลือกจากรายการ..."
+                          />
+                          <button
+                            type="button"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setIsSupplierDropdownOpen((prev) => !prev);
+                            }}
+                            className="absolute right-2 top-2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                            title="แสดงรายชื่อ Supplier ในระบบ"
+                          >
+                            <ChevronDown className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (trimmedInput) {
+                              addSupplierToRawList({ name: trimmedInput });
+                            } else {
+                              setIsSupplierDropdownOpen((prev) => !prev);
+                            }
+                          }}
+                          className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center gap-1 transition-colors cursor-pointer shrink-0 shadow-2xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>เพิ่ม Supplier</span>
+                        </button>
+                      </div>
+
+                      {/* Autocomplete Dropdown of Existing Suppliers */}
+                      {isSupplierDropdownOpen && (suggestions.length > 0 || trimmedInput) && (
+                        <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-30 max-h-48 overflow-y-auto divide-y divide-slate-100">
+                          {trimmedInput && !matchedExisting && !addedNorms.has(normalizeSupplierName(trimmedInput)) && (
+                            <button
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                addSupplierToRawList({ name: trimmedInput });
+                              }}
+                              className="w-full px-3 py-2 text-left text-xs bg-amber-50/70 hover:bg-amber-100/80 flex items-center justify-between gap-2 cursor-pointer"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <Sparkles className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                <span className="font-bold text-slate-800 truncate">
+                                  เพิ่มรายใหม่: "{trimmedInput}"
+                                </span>
+                              </div>
+                              <span className="text-[10px] font-mono font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded shrink-0">
+                                สร้าง {previewCodeForInput} อัตโนมัติ
+                              </span>
+                            </button>
+                          )}
+
+                          {suggestions.map((sup) => (
+                            <button
+                              key={sup.id || sup.code}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                addSupplierToRawList({ id: sup.id, code: sup.code, name: sup.name });
+                              }}
+                              className="w-full px-3 py-2 text-left text-xs hover:bg-blue-50 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-mono font-bold text-[10px] text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded shrink-0">
+                                  {sup.code}
+                                </span>
+                                <span className="font-semibold text-slate-800 truncate">{sup.name}</span>
+                              </div>
+                              <span className="text-[10px] text-emerald-700 font-bold shrink-0">
+                                ดึงข้อมูลเดิม
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Live Auto-Check Feedback Banner */}
+                    {trimmedInput && (
+                      <div
+                        className={`text-[11px] px-3 py-1.5 rounded-xl border flex items-center gap-2 font-medium ${
+                          matchedExisting
+                            ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                            : "bg-indigo-50 border-indigo-200 text-indigo-800"
+                        }`}
+                      >
+                        {matchedExisting ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span>
+                              พบ Supplier ในระบบแล้ว: <strong className="font-mono">{matchedExisting.code}</strong> ({matchedExisting.name}) — ดึงข้อมูลเดิมมาใช้งานทันที
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                            <span>
+                              Supplier รายใหม่ — ระบบจะสร้างรหัส <strong className="font-mono">{previewCodeForInput}</strong> และบันทึก "{trimmedInput}" อัตโนมัติเมื่อกดบันทึก
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Assigned Suppliers List with Main Supplier Toggle & Per-Supplier Latest Price */}
+                    {rawSuppliers.length > 0 ? (
+                      <div className="space-y-2 pt-1">
+                        {rawSuppliers.map((supItem, idx) => {
+                          const existingSup = findMatchingSupplier(supItem, activeSuppliers);
+                          const displayCode = existingSup?.code || supItem.code || previewCodeByIdx[idx] || "AUTO";
+                          const isNew = !existingSup;
+                          const isMain = supItem.is_main !== undefined ? Boolean(supItem.is_main) : idx === 0;
+                          return (
+                            <div
+                              key={`${supItem.name}_${idx}`}
+                              className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs bg-white ${
+                                isMain ? "border-blue-400 bg-blue-50/20 shadow-2xs" : "border-slate-200"
+                              }`}
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span
+                                  className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                                    isMain
+                                      ? "bg-blue-600 text-white"
+                                      : "bg-slate-200 text-slate-700"
+                                  }`}
+                                >
+                                  {isMain && <Star className="w-2.5 h-2.5 fill-amber-300 text-amber-300" />}
+                                  {isMain ? "Supplier หลัก" : `สำรอง #${idx + 1}`}
+                                </span>
+                                <span
+                                  className={`font-mono font-bold text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${
+                                    isNew
+                                      ? "bg-amber-50 text-amber-800 border-amber-300"
+                                      : "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                  }`}
+                                >
+                                  {isNew ? `ใหม่ · ${displayCode}` : displayCode}
+                                </span>
+                                <span className="font-bold text-slate-800 truncate">{supItem.name}</span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0 justify-end">
+                                <div className="flex items-center gap-1 bg-slate-50 border border-slate-300 rounded-lg px-2 py-0.5">
+                                  <span className="text-[10px] font-semibold text-slate-500">ราคาล่าสุด ฿</span>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    min="0"
+                                    value={supItem.latest_price ?? ""}
+                                    onChange={(e) =>
+                                      updateSupplierPriceInRawList(idx, parseFloat(e.target.value) || 0)
+                                    }
+                                    placeholder="0"
+                                    className="w-20 text-right font-mono font-bold text-xs text-emerald-700 bg-transparent focus:outline-none"
+                                    title="กำหนดราคาซื้อล่าสุดสำหรับ Supplier รายนี้ (บันทึกประวัติอัตโนมัติ)"
+                                  />
+                                </div>
+                                {!isMain && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setPrimarySupplierInRawList(idx)}
+                                    className="px-2 py-1 text-[10px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer transition-colors"
+                                    title="ตั้งเป็น Supplier หลัก (Main Supplier)"
+                                  >
+                                    ตั้งเป็นหลัก
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => removeSupplierFromRawList(idx)}
+                                  className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer transition-colors"
+                                  title="ลบ Supplier นี้ออกจากรายการ"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-500 bg-white/80 border border-dashed border-slate-300 rounded-xl px-3 py-2 text-center">
+                        พิมพ์ชื่อ Supplier ด้านบนแล้วกด "เพิ่ม Supplier" (กำหนด Main Supplier และราคาล่าสุดแยกแต่ละรายได้)
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
@@ -2941,11 +3545,19 @@ export default function Warehouse({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">ราคา/หน่วย (฿)</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">ราคากลาง / หลัก (฿)</label>
                   <input
                     type="number"
                     value={rawForm.unit_price}
-                    onChange={(e) => setRawForm({ ...rawForm, unit_price: parseFloat(e.target.value) || 0 })}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value) || 0;
+                      setRawForm({ ...rawForm, unit_price: val });
+                      setRawSuppliers((prev) =>
+                        prev.map((s, idx) =>
+                          (s.is_main || idx === 0) ? { ...s, latest_price: val } : s
+                        )
+                      );
+                    }}
                     className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold font-mono"
                   />
                 </div>
@@ -2970,16 +3582,18 @@ export default function Warehouse({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    disabled={isSavingRaw}
                     onClick={() => setIsRawModalOpen(false)}
-                    className="px-4 py-2 bg-slate-100 text-slate-700 text-xs font-bold rounded-xl cursor-pointer hover:bg-slate-200 transition-colors"
+                    className="px-4 py-2 bg-slate-100 text-slate-700 text-xs font-bold rounded-xl cursor-pointer hover:bg-slate-200 transition-colors disabled:opacity-50"
                   >
                     ยกเลิก
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer transition-colors"
+                    disabled={isSavingRaw}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer transition-colors disabled:opacity-60"
                   >
-                    บันทึก
+                    {isSavingRaw ? "กำลังตรวจสอบ & บันทึก..." : "บันทึก"}
                   </button>
                 </div>
               </div>
@@ -3665,7 +4279,14 @@ export default function Warehouse({
                   ประวัติล็อตและราคาการรับเข้า: {selectedLotMaterial.name}
                 </h3>
                 <p className="text-xs text-slate-300 mt-0.5">
-                  บริษัทผู้จำหน่าย: {selectedLotMaterial.supplier_name || selectedLotMaterial.supplier || "ไม่ได้ระบุ"} | คงเหลือปัจจุบัน: <strong className="text-emerald-400 font-mono">{selectedLotMaterial.stock_qty.toLocaleString()} {selectedLotMaterial.unit || "KG."}</strong>
+                  บริษัทผู้จำหน่าย:{" "}
+                  {getResolvedMaterialSuppliers(selectedLotMaterial, materialSuppliers, activeSuppliers)
+                    .map((s) => `${s.is_main ? "★" : ""}${s.code ? `${s.code} - ` : ""}${s.name}`)
+                    .join(", ") || "ไม่ได้ระบุ"}{" "}
+                  | คงเหลือปัจจุบัน:{" "}
+                  <strong className="text-emerald-400 font-mono">
+                    {selectedLotMaterial.stock_qty.toLocaleString()} {selectedLotMaterial.unit || "KG."}
+                  </strong>
                 </p>
               </div>
               <button
@@ -3763,6 +4384,777 @@ export default function Warehouse({
           </div>
         </div>
       )}
+
+      {/* ========================================================================= */}
+      {/* RELATIONAL MODAL A: MATERIAL -> SUPPLIERS & PURCHASE PRICE HISTORY        */}
+      {/* ========================================================================= */}
+      {selectedMatRelModal && (() => {
+        const liveMat =
+          rawMaterials.find((m) => String(m.id) === String(selectedMatRelModal.id)) ||
+          selectedMatRelModal;
+        const resolvedLinks = getResolvedMaterialSuppliers(liveMat, materialSuppliers, activeSuppliers);
+        const matHistory = purchasePriceHistory
+          .filter(
+            (h) =>
+              String(h.material_id) === String(liveMat.id) ||
+              (h.material_code && liveMat.code && h.material_code.toUpperCase() === liveMat.code.toUpperCase())
+          )
+          .filter((h) => {
+            if (matRelHistorySupplierFilter === "all") return true;
+            return (
+              normalizeSupplierName(h.supplier_name) === normalizeSupplierName(matRelHistorySupplierFilter) ||
+              (h.supplier_code && h.supplier_code.toUpperCase() === matRelHistorySupplierFilter.toUpperCase())
+            );
+          })
+          .sort((a, b) => String(b.created_at || b.purchase_date).localeCompare(String(a.created_at || a.purchase_date)));
+
+        return (
+          <div className="fixed inset-0 bg-black/60 z-[9990] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="p-4 sm:p-5 bg-gradient-to-r from-indigo-900 via-blue-900 to-slate-900 text-white flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-indigo-200 font-bold bg-white/10 px-2 py-0.5 rounded uppercase">
+                      {liveMat.code}
+                    </span>
+                    <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30 px-2 py-0.5 rounded-full">
+                      {resolvedLinks.length} Supplier · {matHistory.length} ประวัติราคา
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-bold mt-1">
+                    โครงสร้างผู้จำหน่ายและประวัติราคาซื้อ: {liveMat.name}
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    หน่วยนับ: {liveMat.unit || "KG."} · กำหนด Supplier หลัก / ราคาล่าสุดแยกตาม Supplier และตรวจสอบย้อนหลัง
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedMatRelModal(null)}
+                  className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-xl transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="px-5 pt-3 border-b border-slate-200 bg-slate-50 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMatRelTab("links")}
+                  className={`px-3.5 py-2 text-xs font-bold rounded-t-xl border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    matRelTab === "links"
+                      ? "border-indigo-600 text-indigo-700 bg-white"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <Building2 className="w-3.5 h-3.5" />
+                  Supplier ที่จำหน่าย ({resolvedLinks.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMatRelTab("history")}
+                  className={`px-3.5 py-2 text-xs font-bold rounded-t-xl border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    matRelTab === "history"
+                      ? "border-indigo-600 text-indigo-700 bg-white"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <History className="w-3.5 h-3.5" />
+                  ประวัติราคาซื้อย้อนหลัง ({matHistory.length})
+                </button>
+              </div>
+
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+                {matRelTab === "links" && (
+                  <>
+                    {/* Quick Add Supplier Link Form */}
+                    <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3.5 space-y-2.5">
+                      <div className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                        <Plus className="w-4 h-4 text-indigo-600" />
+                        เพิ่ม Supplier ให้วัตถุดิบนี้ (สร้าง Supplier ใหม่อัตโนมัติหากยังไม่มี)
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                        <input
+                          type="text"
+                          list="warehouse-sup-datalist"
+                          value={matRelAddName}
+                          onChange={(e) => setMatRelAddName(e.target.value)}
+                          placeholder="พิมพ์ชื่อบริษัท Supplier..."
+                          className="sm:col-span-5 px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-xl font-medium"
+                        />
+                        <datalist id="warehouse-sup-datalist">
+                          {activeSuppliers.map((s) => (
+                            <option key={s.id || s.code} value={s.name} />
+                          ))}
+                        </datalist>
+                        <div className="sm:col-span-3 flex items-center gap-1 bg-white border border-slate-300 rounded-xl px-2.5 py-1.5">
+                          <span className="text-[10px] font-bold text-slate-500">ราคา ฿</span>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={matRelAddPrice || ""}
+                            onChange={(e) => setMatRelAddPrice(parseFloat(e.target.value) || 0)}
+                            placeholder="0.00"
+                            className="w-full text-right font-mono font-bold text-xs text-emerald-700 focus:outline-none"
+                          />
+                        </div>
+                        <label className="sm:col-span-2 flex items-center gap-1.5 text-[11px] font-bold text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={matRelAddIsMain}
+                            onChange={(e) => setMatRelAddIsMain(e.target.checked)}
+                            className="rounded border-slate-300 text-indigo-600"
+                          />
+                          ตั้งเป็นหลัก
+                        </label>
+                        <button
+                          type="button"
+                          disabled={isSavingRelAction || !matRelAddName.trim()}
+                          onClick={async () => {
+                            if (!matRelAddName.trim() || isSavingRelAction) return;
+                            setIsSavingRelAction(true);
+                            try {
+                              await recordMaterialSupplierPurchase({
+                                material: liveMat,
+                                supplierName: matRelAddName.trim(),
+                                unitPrice: Number(matRelAddPrice) || 0,
+                                sourceType: "MATERIAL_FORM",
+                                refDoc: liveMat.code,
+                                recordedBy: "ผู้ดูแลคลังสินค้า",
+                                setAsMain: matRelAddIsMain || resolvedLinks.length === 0,
+                                existingSuppliers: activeSuppliers,
+                                existingMaterialSuppliers: materialSuppliers
+                              });
+                              if (onRefreshSupplierData) await onRefreshSupplierData();
+                              showWarehouseToast(`✓ เชื่อมโยง Supplier "${matRelAddName.trim()}" กับ ${liveMat.code} เรียบร้อยแล้ว`);
+                              setMatRelAddName("");
+                              setMatRelAddPrice(0);
+                              setMatRelAddIsMain(false);
+                            } catch (err: any) {
+                              showWarehouseToast(err?.message || "ไม่สามารถบันทึกข้อมูลได้", "error");
+                            } finally {
+                              setIsSavingRelAction(false);
+                            }
+                          }}
+                          className="sm:col-span-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl cursor-pointer transition-colors"
+                        >
+                          บันทึกเพิ่ม
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Linked Suppliers Table */}
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs text-slate-700 border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 font-bold text-[11px] text-slate-700 border-b border-slate-200">
+                            <th className="p-2.5 text-center w-24">สถานะ</th>
+                            <th className="p-2.5 w-28">รหัส Supplier</th>
+                            <th className="p-2.5">ชื่อบริษัทผู้จำหน่าย</th>
+                            <th className="p-2.5 text-center w-28">ซื้อล่าสุดเมื่อ</th>
+                            <th className="p-2.5 text-right w-44">ราคาซื้อล่าสุด (฿/{liveMat.unit || "KG."})</th>
+                            <th className="p-2.5 text-center w-44">ดำเนินการ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {resolvedLinks.map((ref, idx) => {
+                            const key = `${liveMat.id}_${ref.code || ref.name}`;
+                            const draftPrice =
+                              editingLinkPrices[key] !== undefined
+                                ? editingLinkPrices[key]
+                                : String(ref.latest_price || "");
+                            return (
+                              <tr key={`${ref.code}_${idx}`} className={ref.is_main ? "bg-blue-50/40" : "hover:bg-slate-50"}>
+                                <td className="p-2.5 text-center">
+                                  {ref.is_main ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-600 text-white">
+                                      <Star className="w-2.5 h-2.5 fill-amber-300 text-amber-300" />
+                                      หลัก
+                                    </span>
+                                  ) : (
+                                    <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+                                      สำรอง
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 font-mono font-bold text-blue-700">{ref.code || "-"}</td>
+                                <td className="p-2.5 font-bold text-slate-800">{ref.name}</td>
+                                <td className="p-2.5 text-center font-mono text-slate-500 text-[11px]">
+                                  {ref.last_purchase_date || "-"}
+                                </td>
+                                <td className="p-2.5 text-right">
+                                  <div className="inline-flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      min="0"
+                                      value={draftPrice}
+                                      onChange={(e) =>
+                                        setEditingLinkPrices((prev) => ({ ...prev, [key]: e.target.value }))
+                                      }
+                                      className="w-24 px-2 py-1 text-right font-mono font-bold text-xs text-emerald-700 bg-white border border-slate-300 rounded-lg"
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={isSavingRelAction}
+                                      onClick={async () => {
+                                        const newPrice = parseFloat(draftPrice) || 0;
+                                        if (newPrice <= 0) {
+                                          showWarehouseToast("กรุณากรอกราคามากกว่า 0", "error");
+                                          return;
+                                        }
+                                        setIsSavingRelAction(true);
+                                        try {
+                                          await recordMaterialSupplierPurchase({
+                                            material: liveMat,
+                                            supplierName: ref.name,
+                                            unitPrice: newPrice,
+                                            sourceType: "MANUAL_UPDATE",
+                                            refDoc: `ADJ-${liveMat.code}`,
+                                            recordedBy: "ปรับราคาจากคลังสินค้า",
+                                            existingSuppliers: activeSuppliers,
+                                            existingMaterialSuppliers: materialSuppliers
+                                          });
+                                          if (onRefreshSupplierData) await onRefreshSupplierData();
+                                          showWarehouseToast(`✓ อัปเดตราคาล่าสุดของ ${ref.name} เป็น ฿${newPrice.toLocaleString()} และบันทึกประวัติแล้ว`);
+                                        } finally {
+                                          setIsSavingRelAction(false);
+                                        }
+                                      }}
+                                      className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg cursor-pointer"
+                                      title="อัปเดตราคาล่าสุดและบันทึกประวัติราคา"
+                                    >
+                                      อัปเดต
+                                    </button>
+                                  </div>
+                                </td>
+                                <td className="p-2.5 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    {!ref.is_main && (
+                                      <button
+                                        type="button"
+                                        disabled={isSavingRelAction}
+                                        onClick={async () => {
+                                          setIsSavingRelAction(true);
+                                          try {
+                                            await switchMainMaterialSupplier({
+                                              material: liveMat,
+                                              targetSupplier: { id: ref.id, code: ref.code, name: ref.name },
+                                              existingSuppliers: activeSuppliers,
+                                              existingMaterialSuppliers: materialSuppliers
+                                            });
+                                            if (onRefreshSupplierData) await onRefreshSupplierData();
+                                            showWarehouseToast(`★ ตั้ง "${ref.name}" เป็น Supplier หลักของ ${liveMat.code} เรียบร้อยแล้ว`);
+                                          } finally {
+                                            setIsSavingRelAction(false);
+                                          }
+                                        }}
+                                        className="px-2 py-1 text-[10px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer"
+                                      >
+                                        ตั้งเป็นหลัก
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={isSavingRelAction}
+                                      onClick={async () => {
+                                        setIsSavingRelAction(true);
+                                        try {
+                                          const remaining = resolvedLinks.filter(
+                                            (r) =>
+                                              !(
+                                                (r.code && ref.code && r.code.toUpperCase() === ref.code.toUpperCase()) ||
+                                                normalizeSupplierName(r.name) === normalizeSupplierName(ref.name)
+                                              )
+                                          );
+                                          const syncRes = await syncMaterialSuppliersAndHistory({
+                                            material: {
+                                              id: liveMat.id,
+                                              code: liveMat.code,
+                                              name: liveMat.name,
+                                              unit: liveMat.unit
+                                            },
+                                            supplierInputs: remaining.map((r, i) => ({
+                                              id: r.id,
+                                              code: r.code,
+                                              name: r.name,
+                                              is_main: remaining.some((x) => x.is_main) ? r.is_main : i === 0,
+                                              latest_price: r.latest_price,
+                                              last_purchase_date: r.last_purchase_date
+                                            })),
+                                            existingSuppliers: activeSuppliers,
+                                            existingMaterialSuppliers: materialSuppliers
+                                          });
+                                          if (onSaveRawMaterial) {
+                                            const pSup = syncRes.primarySupplier;
+                                            await onSaveRawMaterial({
+                                              ...liveMat,
+                                              supplier_id: pSup?.id !== undefined && !isNaN(Number(pSup.id)) ? Number(pSup.id) : undefined,
+                                              supplier_code: pSup?.code || "",
+                                              supplier_name: pSup?.name || "",
+                                              supplier: pSup?.name || "",
+                                              supplier_ids: syncRes.resolvedSuppliers.map((s) => s.id).filter(Boolean),
+                                              supplier_codes: syncRes.resolvedSuppliers.map((s) => s.code),
+                                              supplier_names: syncRes.resolvedSuppliers.map((s) => s.name),
+                                              suppliers_list: syncRes.resolvedSuppliers,
+                                              unit_price: pSup?.latest_price && pSup.latest_price > 0 ? pSup.latest_price : liveMat.unit_price
+                                            });
+                                          }
+                                          if (onRefreshSupplierData) await onRefreshSupplierData();
+                                          showWarehouseToast(`✓ นำ "${ref.name}" ออกจาก ${liveMat.code} แล้ว`);
+                                        } finally {
+                                          setIsSavingRelAction(false);
+                                        }
+                                      }}
+                                      className="p-1 text-red-500 hover:bg-red-50 rounded-lg cursor-pointer"
+                                      title="ลบความเชื่อมโยง Supplier นี้"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {resolvedLinks.length === 0 && (
+                            <tr>
+                              <td colSpan={6} className="p-6 text-center text-slate-400">
+                                ยังไม่ได้เชื่อมโยง Supplier กับวัตถุดิบนี้
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+
+                {matRelTab === "history" && (
+                  <>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-slate-700">
+                        บันทึกประวัติราคาซื้อย้อนหลังทั้งหมด ({matHistory.length} รายการ)
+                      </span>
+                      <select
+                        value={matRelHistorySupplierFilter}
+                        onChange={(e) => setMatRelHistorySupplierFilter(e.target.value)}
+                        className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-medium"
+                      >
+                        <option value="all">กรองตาม Supplier: ทั้งหมด</option>
+                        {resolvedLinks.map((s, idx) => (
+                          <option key={idx} value={s.name}>
+                            {s.code ? `${s.code} - ` : ""}{s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs text-slate-700 border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 font-bold text-[11px] text-slate-700 border-b border-slate-200">
+                            <th className="p-2.5">วันที่</th>
+                            <th className="p-2.5">ผู้จำหน่าย (Supplier)</th>
+                            <th className="p-2.5 text-center">แหล่งที่มา / เอกสาร</th>
+                            <th className="p-2.5 text-right">ราคาเดิม</th>
+                            <th className="p-2.5 text-right text-emerald-800 bg-emerald-50/70">ราคาใหม่ที่บันทึก</th>
+                            <th className="p-2.5 text-center">เปลี่ยนแปลง</th>
+                            <th className="p-2.5">หมายเหตุ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {matHistory.map((h) => {
+                            const prev = Number(h.previous_price) || 0;
+                            const curr = Number(h.unit_price) || 0;
+                            const diff = prev > 0 ? curr - prev : 0;
+                            const pct = prev > 0 ? ((diff / prev) * 100).toFixed(1) : null;
+                            return (
+                              <tr key={h.id} className="hover:bg-slate-50">
+                                <td className="p-2.5 font-mono text-slate-600">{h.purchase_date}</td>
+                                <td className="p-2.5">
+                                  <div className="font-bold text-slate-800">{h.supplier_name}</div>
+                                  {h.supplier_code && (
+                                    <span className="text-[10px] font-mono text-blue-700">{h.supplier_code}</span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-center">
+                                  <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold">
+                                    {h.source_type === "PURCHASE_ORDER"
+                                      ? "PO สั่งซื้อ"
+                                      : h.source_type === "GRN_RECEIVE"
+                                        ? "GRN รับเข้า"
+                                        : h.source_type === "STOCK_IMPORT"
+                                          ? "นำเข้าสต็อก"
+                                          : h.source_type === "MANUAL_UPDATE"
+                                            ? "ปรับราคา"
+                                            : "ข้อมูลวัตถุดิบ"}
+                                  </span>
+                                  {h.ref_doc && (
+                                    <div className="text-[10px] font-mono text-slate-500 mt-0.5">{h.ref_doc}</div>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-right font-mono text-slate-400">
+                                  {prev > 0 ? `฿${prev.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : "-"}
+                                </td>
+                                <td className="p-2.5 text-right font-mono font-extrabold text-emerald-700 bg-emerald-50/40">
+                                  ฿{curr.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className="p-2.5 text-center font-mono text-[11px] font-bold">
+                                  {diff > 0.001 ? (
+                                    <span className="inline-flex items-center gap-0.5 text-red-600 bg-red-50 px-1.5 py-0.5 rounded">
+                                      <TrendingUp className="w-3 h-3" /> +{diff.toLocaleString()} ({pct}%)
+                                    </span>
+                                  ) : diff < -0.001 ? (
+                                    <span className="inline-flex items-center gap-0.5 text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                      <TrendingDown className="w-3 h-3" /> {diff.toLocaleString()} ({pct}%)
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">เริ่มต้น / คงเดิม</span>
+                                  )}
+                                </td>
+                                <td className="p-2.5 text-[11px] text-slate-600">{h.notes || "-"}</td>
+                              </tr>
+                            );
+                          })}
+                          {matHistory.length === 0 && (
+                            <tr>
+                              <td colSpan={7} className="p-8 text-center text-slate-400">
+                                ยังไม่มีบันทึกประวัติราคาซื้อย้อนหลังสำหรับวัตถุดิบนี้ (จะบันทึกอัตโนมัติเมื่อกำหนดราคา / ออก PO / รับเข้า GRN)
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedMatRelModal(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  ปิดหน้าต่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ========================================================================= */}
+      {/* RELATIONAL MODAL B: SUPPLIER -> SUPPLIED MATERIALS & PRICE HISTORY        */}
+      {/* ========================================================================= */}
+      {selectedSupRelModal && (() => {
+        const suppliedItems = getSupplierSuppliedMaterials(
+          selectedSupRelModal,
+          rawMaterials,
+          materialSuppliers,
+          activeSuppliers
+        );
+        const supHistory = purchasePriceHistory
+          .filter(
+            (h) =>
+              (selectedSupRelModal.id !== undefined && String(h.supplier_id) === String(selectedSupRelModal.id)) ||
+              (selectedSupRelModal.code && h.supplier_code && h.supplier_code.toUpperCase() === selectedSupRelModal.code.toUpperCase()) ||
+              normalizeSupplierName(h.supplier_name) === normalizeSupplierName(selectedSupRelModal.name)
+          )
+          .sort((a, b) => String(b.created_at || b.purchase_date).localeCompare(String(a.created_at || a.purchase_date)));
+
+        const unlinkedMaterials = rawMaterials.filter(
+          (rm) => !suppliedItems.some((item) => String(item.material.id) === String(rm.id))
+        );
+
+        return (
+          <div className="fixed inset-0 bg-black/60 z-[9990] flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="p-4 sm:p-5 bg-gradient-to-r from-emerald-900 via-teal-900 to-slate-900 text-white flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-emerald-200 font-bold bg-white/10 px-2 py-0.5 rounded uppercase">
+                      {selectedSupRelModal.code}
+                    </span>
+                    <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30 px-2 py-0.5 rounded-full">
+                      จำหน่าย {suppliedItems.length} วัตถุดิบ · {supHistory.length} ประวัติราคา
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-bold mt-1">
+                    รายการวัตถุดิบที่จำหน่ายโดย: {selectedSupRelModal.name}
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    ผู้ติดต่อ: {selectedSupRelModal.contact || "-"} · โทร: {selectedSupRelModal.phone || "-"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSupRelModal(null)}
+                  className="p-1.5 text-slate-300 hover:text-white hover:bg-white/10 rounded-xl transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="px-5 pt-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSupRelTab("materials")}
+                    className={`px-3.5 py-2 text-xs font-bold rounded-t-xl border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      supRelTab === "materials"
+                        ? "border-emerald-600 text-emerald-700 bg-white"
+                        : "border-transparent text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    <Package className="w-3.5 h-3.5" />
+                    วัตถุดิบที่จำหน่าย ({suppliedItems.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSupRelTab("history")}
+                    className={`px-3.5 py-2 text-xs font-bold rounded-t-xl border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      supRelTab === "history"
+                        ? "border-emerald-600 text-emerald-700 bg-white"
+                        : "border-transparent text-slate-500 hover:text-slate-800"
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    ประวัติการเสนอ/ซื้อขายราคา ({supHistory.length})
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSupplierFilter(selectedSupRelModal.name);
+                    setSelectedSupRelModal(null);
+                    setActiveSection("raw");
+                  }}
+                  className="mb-1.5 px-2.5 py-1 text-[11px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer flex items-center gap-1"
+                >
+                  ไปที่ตารางวัตถุดิบ (กรองเฉพาะรายนี้) <ArrowRight className="w-3 h-3" />
+                </button>
+              </div>
+
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
+                {supRelTab === "materials" && (
+                  <>
+                    {/* Quick assign a material to this supplier */}
+                    <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3.5 space-y-2">
+                      <div className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                        <Plus className="w-4 h-4 text-emerald-600" />
+                        ผูกวัตถุดิบเพิ่มให้ Supplier รายนี้
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                        <select
+                          value={supRelAddMatId}
+                          onChange={(e) => setSupRelAddMatId(Number(e.target.value) || "")}
+                          className="sm:col-span-5 px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-xl font-medium"
+                        >
+                          <option value="">-- เลือกวัตถุดิบที่ต้องการผูก --</option>
+                          {unlinkedMaterials.map((rm) => (
+                            <option key={rm.id} value={rm.id}>
+                              {rm.code} - {rm.name}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="sm:col-span-3 flex items-center gap-1 bg-white border border-slate-300 rounded-xl px-2.5 py-1.5">
+                          <span className="text-[10px] font-bold text-slate-500">ราคา ฿</span>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={supRelAddPrice || ""}
+                            onChange={(e) => setSupRelAddPrice(parseFloat(e.target.value) || 0)}
+                            placeholder="0.00"
+                            className="w-full text-right font-mono font-bold text-xs text-emerald-700 focus:outline-none"
+                          />
+                        </div>
+                        <label className="sm:col-span-2 flex items-center gap-1.5 text-[11px] font-bold text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={supRelAddIsMain}
+                            onChange={(e) => setSupRelAddIsMain(e.target.checked)}
+                            className="rounded border-slate-300 text-emerald-600"
+                          />
+                          ตั้งเป็นหลัก
+                        </label>
+                        <button
+                          type="button"
+                          disabled={isSavingRelAction || !supRelAddMatId}
+                          onClick={async () => {
+                            const mat = rawMaterials.find((r) => String(r.id) === String(supRelAddMatId));
+                            if (!mat || isSavingRelAction) return;
+                            setIsSavingRelAction(true);
+                            try {
+                              await recordMaterialSupplierPurchase({
+                                material: mat,
+                                supplierName: selectedSupRelModal.name,
+                                unitPrice: Number(supRelAddPrice) || 0,
+                                sourceType: "MATERIAL_FORM",
+                                refDoc: mat.code,
+                                recordedBy: "ผูกจากข้อมูล Supplier",
+                                setAsMain: supRelAddIsMain,
+                                existingSuppliers: activeSuppliers,
+                                existingMaterialSuppliers: materialSuppliers
+                              });
+                              if (onRefreshSupplierData) await onRefreshSupplierData();
+                              showWarehouseToast(`✓ เชื่อมโยง "${mat.name}" กับ ${selectedSupRelModal.name} เรียบร้อยแล้ว`);
+                              setSupRelAddMatId("");
+                              setSupRelAddPrice(0);
+                              setSupRelAddIsMain(false);
+                            } finally {
+                              setIsSavingRelAction(false);
+                            }
+                          }}
+                          className="sm:col-span-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl cursor-pointer transition-colors"
+                        >
+                          เพิ่มวัตถุดิบ
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs text-slate-700 border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 font-bold text-[11px] text-slate-700 border-b border-slate-200">
+                            <th className="p-2.5 w-28">รหัสวัตถุดิบ</th>
+                            <th className="p-2.5">ชื่อสารเคมี / วัตถุดิบ</th>
+                            <th className="p-2.5 text-center w-28">บทบาท</th>
+                            <th className="p-2.5 text-right w-32">ราคาล่าสุดจากรายนี้</th>
+                            <th className="p-2.5 text-center w-28">อัปเดตล่าสุด</th>
+                            <th className="p-2.5 text-right w-28">สต็อกคงเหลือ</th>
+                            <th className="p-2.5 text-center w-32">ประวัติราคา</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {suppliedItems.map(({ material, linkRef }) => (
+                            <tr key={material.id} className="hover:bg-slate-50">
+                              <td className="p-2.5 font-mono font-bold text-blue-700">{material.code}</td>
+                              <td className="p-2.5 font-bold text-slate-800">{material.name}</td>
+                              <td className="p-2.5 text-center">
+                                {linkRef.is_main ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-600 text-white">
+                                    <Star className="w-2.5 h-2.5 fill-amber-300 text-amber-300" />
+                                    หลัก
+                                  </span>
+                                ) : (
+                                  <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+                                    สำรอง
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-2.5 text-right font-mono font-extrabold text-emerald-700">
+                                {linkRef.latest_price && linkRef.latest_price > 0
+                                  ? `฿${linkRef.latest_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                                  : "-"}
+                              </td>
+                              <td className="p-2.5 text-center font-mono text-slate-500 text-[11px]">
+                                {linkRef.last_purchase_date || "-"}
+                              </td>
+                              <td className="p-2.5 text-right font-mono font-semibold">
+                                {material.stock_qty.toLocaleString()} {material.unit || "KG."}
+                              </td>
+                              <td className="p-2.5 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedSupRelModal(null);
+                                    setSelectedMatRelModal(material);
+                                    setMatRelTab("history");
+                                    setMatRelHistorySupplierFilter(selectedSupRelModal.name);
+                                  }}
+                                  className="px-2 py-1 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg cursor-pointer"
+                                >
+                                  ดูประวัติราคา
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          {suppliedItems.length === 0 && (
+                            <tr>
+                              <td colSpan={7} className="p-8 text-center text-slate-400">
+                                Supplier รายนี้ยังไม่มีวัตถุดิบที่ผูกไว้ในระบบ
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+
+                {supRelTab === "history" && (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <table className="w-full text-left text-xs text-slate-700 border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 font-bold text-[11px] text-slate-700 border-b border-slate-200">
+                          <th className="p-2.5">วันที่</th>
+                          <th className="p-2.5">วัตถุดิบ</th>
+                          <th className="p-2.5 text-center">แหล่งที่มา / เลขที่</th>
+                          <th className="p-2.5 text-right">ราคาเดิม</th>
+                          <th className="p-2.5 text-right text-emerald-800 bg-emerald-50/70">ราคาที่บันทึก</th>
+                          <th className="p-2.5">หมายเหตุ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {supHistory.map((h) => (
+                          <tr key={h.id} className="hover:bg-slate-50">
+                            <td className="p-2.5 font-mono text-slate-600">{h.purchase_date}</td>
+                            <td className="p-2.5">
+                              <span className="font-mono font-bold text-blue-700 mr-1.5">{h.material_code}</span>
+                              <span className="font-bold text-slate-800">{h.material_name}</span>
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <span className="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold">
+                                {h.source_type}
+                              </span>
+                              {h.ref_doc && (
+                                <div className="text-[10px] font-mono text-slate-500">{h.ref_doc}</div>
+                              )}
+                            </td>
+                            <td className="p-2.5 text-right font-mono text-slate-400">
+                              {Number(h.previous_price) > 0
+                                ? `฿${Number(h.previous_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                                : "-"}
+                            </td>
+                            <td className="p-2.5 text-right font-mono font-extrabold text-emerald-700 bg-emerald-50/40">
+                              ฿{Number(h.unit_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                            <td className="p-2.5 text-[11px] text-slate-600">{h.notes || "-"}</td>
+                          </tr>
+                        ))}
+                        {supHistory.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-slate-400">
+                              ยังไม่มีประวัติการบันทึกราคาซื้อขายกับ Supplier รายนี้
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSupRelModal(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  ปิดหน้าต่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -126,7 +126,8 @@ export function clearLocalCache() {
     "suppliers", "customers", "products", "raw_materials", "raw_material_lots",
     "qc_inspections", "audit_logs", "bom_recipes", "bom_items", "production_orders",
     "packing_orders", "purchase_orders", "purchase_order_items", "grns", "prechecks",
-    "inventory_pack", "purchase_packs", "projects", "semi_finished_goods", "requisitions"
+    "inventory_pack", "purchase_packs", "projects", "semi_finished_goods", "requisitions",
+    "material_suppliers", "purchase_price_history"
   ];
   tables.forEach((t) => {
     try {
@@ -390,7 +391,7 @@ export const TABLE_ALLOWED_COLUMNS: Record<string, string[]> = {
     "code", "name", "type", "version", "status", "image_url", "category", "description", "unit_price", "stock_qty", "min_stock", "created_at"
   ],
   raw_materials: [
-    "code", "name", "category", "default_unit", "base_unit", "standard_conversion", "unit", "stock_qty", "min_stock", "unit_price", "supplier_id", "supplier_name", "storage_condition", "status", "coa_required", "image_url", "created_at", "updated_at"
+    "code", "name", "category", "default_unit", "base_unit", "standard_conversion", "unit", "stock_qty", "min_stock", "unit_price", "supplier_id", "supplier_code", "supplier_name", "supplier_ids", "supplier_codes", "supplier_names", "suppliers_list", "storage_condition", "status", "coa_required", "image_url", "created_at", "updated_at"
   ],
   raw_material_lots: [
     "lot_id_code", "material_id", "material_code", "material_name", "supplier_lot_no", "grn_id", "grn_no", "po_number", "supplier_id", "supplier_name", "received_date", "manufacture_date", "expiry_date", "retest_date", "received_qty", "remaining_qty", "purchase_unit", "unit_price_per_kg", "total_purchase_value", "currency", "qc_status", "appearance", "coa_url", "coa_status", "barcode", "stock_status", "created_by", "created_at"
@@ -439,6 +440,12 @@ export const TABLE_ALLOWED_COLUMNS: Record<string, string[]> = {
   ],
   requisitions: [
     "code", "date", "department", "requester", "purpose", "status", "items", "created_at"
+  ],
+  material_suppliers: [
+    "code", "material_id", "material_code", "material_name", "supplier_id", "supplier_code", "supplier_name", "is_main", "latest_price", "currency", "unit", "last_purchase_date", "last_po_no", "last_grn_no", "notes", "status", "created_at", "updated_at"
+  ],
+  purchase_price_history: [
+    "code", "material_supplier_id", "material_id", "material_code", "material_name", "supplier_id", "supplier_code", "supplier_name", "unit_price", "previous_price", "unit", "currency", "qty", "purchase_date", "source_type", "ref_doc", "recorded_by", "notes", "created_at"
   ]
 };
 
@@ -683,6 +690,13 @@ export function sanitizePayload(entity: string, data: any): any {
   } else if (entity === "bom_recipes") {
     if ("product_id" in cleanData) cleanData.product_id = Number(cleanData.product_id) || 0;
     if ("estimated_unit_cost" in cleanData) cleanData.estimated_unit_cost = Number(cleanData.estimated_unit_cost) || 0;
+  } else if (entity === "material_suppliers") {
+    if ("latest_price" in cleanData) cleanData.latest_price = Number(cleanData.latest_price) || 0;
+    if ("is_main" in cleanData) cleanData.is_main = Boolean(cleanData.is_main);
+  } else if (entity === "purchase_price_history") {
+    if ("unit_price" in cleanData) cleanData.unit_price = Number(cleanData.unit_price) || 0;
+    if ("previous_price" in cleanData) cleanData.previous_price = Number(cleanData.previous_price) || 0;
+    if ("qty" in cleanData) cleanData.qty = Number(cleanData.qty) || 0;
   }
 
   return cleanData;
@@ -808,7 +822,8 @@ export async function clientSave(entity: string, id: number | string, data: any)
 
   // 2. PRIMARY: Save directly into Firebase Firestore
   try {
-    const docId = String(recordToSave.code || recordToSave.id || savedId);
+    const rawDocId = String(recordToSave.code || recordToSave.id || savedId);
+    const docId = rawDocId.replace(/[^a-zA-Z0-9_\-.]/g, "_");
     await firestoreSaveDoc(table, docId, recordToSave);
   } catch (fbErr) {
     console.warn(`[Firestore Primary Save Warning] '${table}':`, fbErr);
@@ -949,6 +964,8 @@ export async function clearAllDatabaseTables(passcode: string): Promise<{
     "projects",
     "semi_finished_goods",
     "requisitions",
+    "purchase_price_history",
+    "material_suppliers",
     "raw_materials",
     "products",
     "customers",
@@ -1120,7 +1137,9 @@ export const ALL_17_TABLES = [
   "purchase_packs",
   "projects",
   "semi_finished_goods",
-  "requisitions"
+  "requisitions",
+  "material_suppliers",
+  "purchase_price_history"
 ];
 
 /**

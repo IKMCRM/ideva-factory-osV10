@@ -36,6 +36,60 @@ export interface Product {
   image_url?: string;
 }
 
+export interface RawMaterialSupplierRef {
+  id?: number | string;
+  code: string;
+  name: string;
+  is_main?: boolean;
+  latest_price?: number;
+  last_purchase_date?: string;
+}
+
+export interface MaterialSupplier {
+  id: number | string;
+  code: string;                 // Deterministic key: MS-{materialKey}-{supplierKey}
+  material_id: number | string;
+  material_code: string;
+  material_name: string;
+  supplier_id: number | string;
+  supplier_code: string;
+  supplier_name: string;
+  is_main: boolean;             // Main Supplier flag (only 1 per material)
+  latest_price: number;         // Latest purchase price from this supplier
+  currency?: string;
+  unit?: string;
+  last_purchase_date?: string;
+  last_po_no?: string;
+  last_grn_no?: string;
+  notes?: string;
+  status: string;               // 'active' | 'inactive'
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PurchasePriceHistory {
+  id: number | string;
+  code: string;
+  material_supplier_id?: number | string;
+  material_id: number | string;
+  material_code: string;
+  material_name: string;
+  supplier_id: number | string;
+  supplier_code: string;
+  supplier_name: string;
+  unit_price: number;
+  previous_price?: number;
+  unit?: string;
+  currency?: string;
+  qty?: number;
+  purchase_date: string;
+  source_type: "MATERIAL_FORM" | "MANUAL_UPDATE" | "PURCHASE_ORDER" | "GRN_RECEIVE" | "STOCK_IMPORT";
+  ref_doc?: string;
+  recorded_by?: string;
+  notes?: string;
+  created_at?: string;
+}
+
 export interface RawMaterial {
   id: number;
   code: string;
@@ -47,7 +101,12 @@ export interface RawMaterial {
   standard_conversion?: number; // e.g. 1000 for KG -> G
   supplier?: string;
   supplier_id?: number;
+  supplier_code?: string;
   supplier_name?: string;
+  supplier_ids?: (number | string)[];
+  supplier_codes?: string[];
+  supplier_names?: string[];
+  suppliers_list?: RawMaterialSupplierRef[];
   min_stock: number;          // Minimum Stock in Base Unit (G / ML)
   stock_qty: number;          // Total Available Stock in Base Unit (G / ML)
   storage_condition?: string; // e.g. Cool & Dry (15-25°C), Dark Bottle

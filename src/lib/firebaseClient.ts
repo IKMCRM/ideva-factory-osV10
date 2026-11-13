@@ -221,7 +221,9 @@ export function subscribeToFirestoreRealtime(
     "semi_finished_goods",
     "raw_material_lots",
     "qc_inspections",
-    "audit_logs"
+    "audit_logs",
+    "material_suppliers",
+    "purchase_price_history"
   ];
 
   targetCollections.forEach((table) => {
